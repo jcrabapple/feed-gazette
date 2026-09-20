@@ -178,10 +178,15 @@ SCRIPT_FEEDS = r'''
   }
 
   function tryFetchText(url) {
-    return fetch(url, { redirect: 'follow' }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.text();
-    });
+    // 15s cap so a slow or degraded relay settles the popup instead of hanging it
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 15000) : null;
+    return fetch(url, { redirect: 'follow', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .finally(function () { if (timer) clearTimeout(timer); });
   }
   function fetchFeedText(url) {
     return tryFetchText(url).catch(function () {
