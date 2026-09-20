@@ -1,0 +1,9 @@
+# generated site output
+site/
+# local publish state (contains claim tokens) - never commit
+.herenow/
+# user feed configuration
+feeds.json
+__pycache__/
+*.pyc
+.venv/
