@@ -726,8 +726,16 @@ footer {{
 
   var lastScrollY = 0;
 
+  function resolveArticle(idx) {{
+    if (typeof window.__gazetteResolve === 'function') {{
+      var live = window.__gazetteResolve(idx);
+      if (live) return live;
+    }}
+    return DATA[idx];
+  }}
+
   function open(idx) {{
-    var a = (typeof window.__gazetteResolve === 'function') ? window.__gazetteResolve(idx) : DATA[idx];
+    var a = resolveArticle(idx);
     if (!a) return;
     if (a.live && typeof window.__gazetteOpen === 'function') {{ window.__gazetteOpen(idx); return; }}
     lastScrollY = window.scrollY;
