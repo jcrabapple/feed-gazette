@@ -424,11 +424,13 @@ def render(sections, generated):
 try {{
   var t = localStorage.getItem('gazette-theme');
   if (t === 'dark' || t === 'eink') document.documentElement.setAttribute('data-theme', t);
+  var f = localStorage.getItem('gazette-font');
+  if (f === 'serif' || f === 'sans' || f === 'plex') document.documentElement.setAttribute('data-font', f);
 }} catch (e) {{}}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;0,900;1,500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;0,900;1,500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Inter:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root {{
   --ink: #1a1714;
@@ -466,18 +468,34 @@ html[data-theme="eink"] {{
   --backdrop: rgba(255,255,255,0.75);
   --shadow: none;
 }}
+:root {{
+  --font-head: "Playfair Display", Georgia, serif;
+  --font-body: "Source Serif 4", Georgia, serif;
+}}
+html[data-font="serif"] {{
+  --font-head: "Source Serif 4", Georgia, serif;
+  --font-body: "Source Serif 4", Georgia, serif;
+}}
+html[data-font="sans"] {{
+  --font-head: "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+}}
+html[data-font="plex"] {{
+  --font-head: "IBM Plex Sans", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+}}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{
   background: var(--paper);
   color: var(--ink);
-  font-family: "Source Serif 4", Georgia, serif;
+  font-family: var(--font-body);
   line-height: 1.45;
   padding: 2rem 1.5rem 4rem;
 }}
 .sheet {{ max-width: 1200px; margin: 0 auto; }}
 .masthead {{ text-align: center; border-bottom: 4px double var(--rule); padding-bottom: 1rem; }}
 .masthead h1 {{
-  font-family: "Playfair Display", Georgia, serif;
+  font-family: var(--font-head);
   font-weight: 900;
   font-size: clamp(2.5rem, 8vw, 5rem);
   letter-spacing: 0.02em;
@@ -522,14 +540,14 @@ body {{
   padding: 0.45rem 0; margin-bottom: 1.25rem;
 }}
 .section-title {{
-  font-family: "Playfair Display", Georgia, serif;
+  font-family: var(--font-head);
   font-weight: 700; font-size: 1.4rem; text-transform: uppercase; letter-spacing: 0.08em;
 }}
 .section-count {{ font-size: 0.75rem; color: var(--faint); text-transform: uppercase; letter-spacing: 0.12em; }}
 .columns {{ columns: 3 280px; column-gap: 2rem; column-rule: 1px solid var(--colrule); }}
 .article {{ break-inside: avoid; margin-bottom: 1.75rem; }}
 .article h2 {{
-  font-family: "Playfair Display", Georgia, serif;
+  font-family: var(--font-head);
   font-weight: 700; font-size: 1.25rem; line-height: 1.2; margin-bottom: 0.3rem;
 }}
 .article.lead h2 {{ font-size: 1.7rem; }}
@@ -561,14 +579,14 @@ dialog.reader::backdrop {{ background: var(--backdrop); }}
   color: var(--accent); margin-bottom: 0.3rem;
 }}
 .reader-head h2 {{
-  font-family: "Playfair Display", Georgia, serif;
+  font-family: var(--font-head);
   font-weight: 700; font-size: 1.5rem; line-height: 1.2;
 }}
 .reader-head .dateline {{ margin: 0.4rem 0 0; }}
 .reader-close {{
   position: absolute; top: 0.6rem; right: 0.8rem;
   background: none; border: none; font-size: 1.6rem; line-height: 1;
-  color: var(--faint); cursor: pointer; font-family: Georgia, serif;
+  color: var(--faint); cursor: pointer; font-family: var(--font-head);
 }}
 .reader-close:hover {{ color: var(--accent); }}
 .reader-body {{ overflow-y: auto; padding: 1.2rem 1.4rem 1.4rem; }}
@@ -603,6 +621,7 @@ footer {{
   <span id="edition-label">Compiled from RSS feeds</span>
   <span id="updated-label">Updated {esc(generated)} UTC</span>
   <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch theme">Theme: Paper</button>
+  <button class="theme-toggle" id="font-toggle" type="button" aria-label="Switch font">Font: Classic</button>
   <button class="theme-toggle" id="settings-btn" type="button">Settings</button>
 </div>
 <div id="sections">
@@ -676,6 +695,26 @@ footer {{
     updateToggleLabel();
   }});
   updateToggleLabel();
+
+  /* font cycling: classic -> serif -> sans -> plex */
+  var FONTS = ['classic', 'serif', 'sans', 'plex'];
+  var FLABELS = {{ classic: 'Classic', serif: 'Serif', sans: 'Sans', plex: 'Plex' }};
+  var fontBtn = document.getElementById('font-toggle');
+  function currentFont() {{
+    var f = document.documentElement.getAttribute('data-font');
+    return FONTS.indexOf(f) >= 0 ? f : 'classic';
+  }}
+  function updateFontLabel() {{
+    fontBtn.textContent = 'Font: ' + FLABELS[currentFont()];
+  }}
+  fontBtn.addEventListener('click', function () {{
+    var next = FONTS[(FONTS.indexOf(currentFont()) + 1) % FONTS.length];
+    if (next === 'classic') document.documentElement.removeAttribute('data-font');
+    else document.documentElement.setAttribute('data-font', next);
+    try {{ localStorage.setItem('gazette-font', next); }} catch (e) {{}}
+    updateFontLabel();
+  }});
+  updateFontLabel();
 
   var els = {{
     kicker: document.getElementById('r-kicker'),
