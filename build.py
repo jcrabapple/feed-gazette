@@ -213,6 +213,7 @@ SCRIPT_FEEDS = r'''
 (function () {
   var DEFAULTS = __DEFAULT_FEEDS__;
   var RELAY = 'https://api.allorigins.win/raw?url=';
+  var RELAY2 = 'https://api.codetabs.com/v1/proxy?quest=';
   var liveData = {};
   var liveIdx = 0;
   var active = null;
@@ -281,8 +282,11 @@ SCRIPT_FEEDS = r'''
       .finally(function () { if (timer) clearTimeout(timer); });
   }
   function fetchFeedText(url) {
+    // direct first (some feeds send CORS headers), then two public relays
     return tryFetchText(url).catch(function () {
-      return tryFetchText(RELAY + encodeURIComponent(url));
+      return tryFetchText(RELAY + encodeURIComponent(url)).catch(function () {
+        return tryFetchText(RELAY2 + encodeURIComponent(url));
+      });
     });
   }
 
