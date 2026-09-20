@@ -906,7 +906,8 @@ body {{
   font: inherit; font-size: 0.78rem; padding: 0.25rem 0.6rem;
 }}
 .search-box:focus {{ outline: none; border-color: var(--accent); }}
-#search-status {{ font-size: 0.75rem; color: var(--faint); font-style: italic; min-height: 1.1em; }}
+#search-status {{ font-size: 0.75rem; color: var(--faint); font-style: italic; margin: 0.4rem 0 0; }}
+#search-status:empty {{ display: none; }}
 .feed-actions {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }}
 #shared-banner {{
   display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
@@ -948,11 +949,14 @@ dialog.reader::backdrop {{ background: var(--backdrop); }}
 }}
 .reader-head .dateline {{ margin: 0.4rem 0 0; }}
 .reader-close {{
-  position: absolute; top: 0.6rem; right: 0.8rem;
-  background: none; border: none; font-size: 1.6rem; line-height: 1;
+  position: absolute; top: 0.7rem; right: 0.8rem;
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 1px solid var(--colrule);
+  background: none; font-size: 1.35rem; line-height: 1;
   color: var(--faint); cursor: pointer; font-family: var(--font-head);
+  display: flex; align-items: center; justify-content: center;
 }}
-.reader-close:hover {{ color: var(--accent); }}
+.reader-close:hover {{ color: var(--accent); border-color: var(--accent); }}
 .reader-body {{ overflow-y: auto; padding: 1.2rem 1.4rem 1.4rem; }}
 .reader-body p {{ margin-bottom: 0.9rem; font-size: 1.02rem; }}
 .reader-body p:first-child {{ font-size: 1.1rem; }}
@@ -970,7 +974,18 @@ footer {{
 @media (max-width: 640px) {{
   body {{ padding: 1.25rem 1rem 3rem; }}
   .columns {{ columns: 1; }}
+  .section {{ margin-top: 1.5rem; }}
+  .masthead {{ padding-bottom: 0.75rem; }}
   dialog.reader {{ width: 100%; max-height: none; height: 100dvh; max-width: none; }}
+  /* FAB close: thumb-sized, bottom right, clear of the footer bar */
+  .reader-close {{
+    position: fixed; top: auto; right: 1.1rem; bottom: 4.2rem;
+    width: 56px; height: 56px; border-radius: 50%; border: none;
+    background: var(--ink); color: var(--paper);
+    font-size: 1.9rem; line-height: 1; z-index: 10;
+    box-shadow: var(--shadow);
+  }}
+  html[data-theme="eink"] .reader-close {{ border: 2px solid var(--ink); }}
 }}
 </style>
 </head>
