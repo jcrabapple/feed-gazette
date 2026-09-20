@@ -35,6 +35,18 @@ one output HTML file you can host anywhere static files are served.
 - **Normal link behavior** — cmd-click / ctrl-click / middle-click on a headline
   opens the source in a new tab, exactly as you'd expect; a plain tap opens the
   reader popup.
+- **Instant search** — press `/` or use the search box to filter the whole edition
+  across headlines, excerpts, and embedded full text.
+- **Story clustering** — the same story syndicated across feeds appears once with
+  an "Also in: …" badge naming the other sections covering it (in the paper and
+  in the reader popup).
+- **OPML import/export** — bring your subscriptions from any RSS reader in
+  Settings, or export your edition as OPML. `feeds.opml` in the project directory
+  works as a build-time feed source too (after `feeds.json`).
+- **Shareable editions** — "Copy share link" in Settings encodes the feed list in
+  the URL hash; anyone opening that link gets the same edition.
+- **Self-updating on GitHub Pages** — a scheduled workflow rebuilds and deploys
+  the edition every 6 hours with zero infrastructure (see below).
 
 ## Quick start
 
@@ -86,8 +98,19 @@ every push and PR.
 
 ## Refreshing on a schedule
 
-The page is a snapshot of whenever you last ran `build.py`. To keep it fresh, run
-it on a cron and upload `site/` to your static host. For example, with
+The page is a snapshot of whenever you last ran `build.py`.
+
+### GitHub Pages (zero infra)
+
+Enable Pages once (Settings → Pages → Source: **GitHub Actions**). The included
+`.github/workflows/pages.yml` then rebuilds the edition from your committed
+`feeds.json`/`feeds.opml` (or the BBC defaults) and deploys it to
+`https://<user>.github.io/<repo>/` every 6 hours, on every push to `main`, and on
+demand — tests run first, so a broken build never deploys.
+
+### Any other host
+
+Run it on a cron and upload `site/` to your static host. For example, with
 [here.now](https://here.now) (any static host with a CLI works the same way):
 
 ```bash

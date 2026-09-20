@@ -125,6 +125,19 @@ class TestDedupe(unittest.TestCase):
         self.assertEqual(removed, 1)
         self.assertEqual(len(secs[1]["items"]), 0)
 
+    def test_cluster_records_also_in(self):
+        secs = [section([{"title": "Ministers announce sweeping planning reforms",
+                          "link": "https://x.org/p/1"}], name="World"),
+                section([{"title": "A story again", "link": "https://x.org/p/1?utm=rss"}], name="Tech"),
+                section([{"title": "ministers announce sweeping planning reforms",
+                          "link": "https://y.org/p/1"},
+                         {"title": "Unrelated local story about traffic",
+                          "link": "https://z.org/9"}], name="Metro")]
+        removed = build.dedupe_sections(secs)
+        self.assertEqual(removed, 2)
+        self.assertEqual(secs[0]["items"][0]["also_in"], ["Tech", "Metro"])
+        self.assertEqual(len(secs[2]["items"]), 1)  # unrelated story survives
+
     def test_different_paths_kept(self):
         secs = [section([{"title": "One", "link": "https://x.org/p/1"}]),
                 section([{"title": "Two", "link": "https://x.org/p/2"}])]
@@ -253,6 +266,33 @@ class TestParaExtractor(unittest.TestCase):
 class TestEsc(unittest.TestCase):
     def test_escapes_quotes_and_angle_brackets(self):
         self.assertEqual(build.esc('<a href="x">&'), "&lt;a href=&quot;x&quot;&gt;&amp;")
+
+
+class TestOpml(unittest.TestCase):
+    def test_parse_opml_nested_with_fallbacks(self):
+        opml = """<opml version="2.0"><body>
+        <outline text="News">
+          <outline type="rss" text="BBC News" xmlUrl="https://bbc.org/rss"/>
+          <outline type="rss" title="Title Only" xmlUrl="https://t.org/rss"/>
+          <outline text="No URL here"/>
+        </outline>
+        <outline type="rss" xmlUrl="https://plain.org/rss"/>
+        </body></opml>"""
+        feeds = build.parse_opml(opml)
+        self.assertEqual(feeds, [
+            ("BBC News", "https://bbc.org/rss"),
+            ("Title Only", "https://t.org/rss"),
+            ("Feed", "https://plain.org/rss"),
+        ])
+
+    def test_parse_opml_empty(self):
+        self.assertEqual(build.parse_opml('<opml version="2.0"><body/></opml>'), [])
+
+    def test_render_embeds_also_in(self):
+        secs = section([{"title": "Big story", "link": "https://x.org/1", "pub": "",
+                         "desc": "d", "idx": 0, "paras": [], "also_in": ["Tech", "Science"]}])
+        html = build.render([secs], "12:00")
+        self.assertIn("Also in: Tech, Science", html)
 
 
 if __name__ == "__main__":

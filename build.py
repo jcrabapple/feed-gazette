@@ -19,6 +19,8 @@ FEEDS = [
 FEEDS_FILE = Path(__file__).parent / "feeds.json"
 if FEEDS_FILE.exists():
     FEEDS = [(f["name"], f["url"]) for f in json.loads(FEEDS_FILE.read_text(encoding="utf-8"))]
+# Or an OPML export from any RSS reader (feeds.json wins if both exist).
+OPML_FILE = Path(__file__).parent / "feeds.opml"
 
 TITLE = "The Feed Gazette"
 TAGLINE = "All the news that fits, we syndicate."
@@ -43,6 +45,21 @@ def strip_html(s):
         elif depth == 0:
             out.append(ch)
     return " ".join("".join(out).split())
+
+def parse_opml(text):
+    """Extract (name, url) from OPML <outline xmlUrl=...> elements, any nesting depth."""
+    root = ET.fromstring(text)
+    out = []
+    for o in root.iter("outline"):
+        url = (o.get("xmlUrl") or "").strip()
+        if not url:
+            continue
+        name = (o.get("text") or o.get("title") or "Feed").strip()
+        out.append((name, url))
+    return out
+
+if not FEEDS_FILE.exists() and OPML_FILE.exists():
+    FEEDS = parse_opml(OPML_FILE.read_text(encoding="utf-8"))
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 MEDIA_NS = {"media": "http://search.yahoo.com/mrss/"}
@@ -179,10 +196,13 @@ def article_html(a, lead=False, with_img=True):
                f'onerror="this.parentElement.remove()">'
                f'</figure>')
     cls = "article lead" if lead else "article"
+    also = a.get("also_in") or []
+    also_html = f'<p class="also-in">Also in: {esc(", ".join(also))}</p>' if also else ""
     return f'''<article class="{cls}">
 {img}
 <h2><a href="{esc(safe_link(a["link"]))}" data-idx="{a["idx"]}" class="art-link">{esc(a["title"])}</a></h2>
 <p class="dateline">{esc(d)}</p>
+{also_html}
 <p class="excerpt" data-idx="{a["idx"]}">{esc(a["desc"])}</p>
 </article>'''
 
@@ -196,10 +216,33 @@ SCRIPT_FEEDS = r'''
   var liveData = {};
   var liveIdx = 0;
   var active = null;
-  try {
-    var saved = JSON.parse(localStorage.getItem('gazette-feeds') || 'null');
-    if (Array.isArray(saved) && saved.length && saved.every(function (f) { return f && f.u; })) active = saved;
-  } catch (e) {}
+  var isShared = false;
+  function b64uEncode(s) {
+    return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64uDecode(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return decodeURIComponent(escape(atob(s)));
+  }
+  // a shared edition in the URL hash wins over saved settings
+  var hashMatch = /[#&]feeds=([^&]+)/.exec(location.hash);
+  if (hashMatch) {
+    try {
+      var arr = JSON.parse(b64uDecode(hashMatch[1]));
+      if (Array.isArray(arr) && arr.length && arr.every(function (f) { return f && f.u; })) {
+        active = arr;
+        isShared = true;
+        try { localStorage.setItem('gazette-feeds', JSON.stringify(arr)); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  if (!active) {
+    try {
+      var saved = JSON.parse(localStorage.getItem('gazette-feeds') || 'null');
+      if (Array.isArray(saved) && saved.length && saved.every(function (f) { return f && f.u; })) active = saved;
+    } catch (e) {}
+  }
 
   function esc(s) {
     var d = document.createElement('div');
@@ -298,9 +341,10 @@ SCRIPT_FEEDS = r'''
       img = '<figure class="art-fig"><img src="' + esc(a.thumb) + '" alt="" loading="lazy" onerror="this.parentElement.remove()"></figure>';
     }
     var cls = lead ? 'article lead' : 'article';
+    var also = a.ai && a.ai.length ? '<p class="also-in">Also in: ' + esc(a.ai.join(', ')) + '</p>' : '';
     return '<article class="' + cls + '">' + img +
       '<h2><a href="' + esc(safeLink(a.u)) + '" data-idx="' + esc(idx) + '" class="art-link">' + esc(a.t) + '</a></h2>' +
-      '<p class="dateline">' + esc(a.d) + '</p>' +
+      '<p class="dateline">' + esc(a.d) + '</p>' + also +
       '<p class="excerpt" data-idx="' + esc(idx) + '">' + esc(a.s) + '</p></article>';
   }
 
@@ -308,7 +352,7 @@ SCRIPT_FEEDS = r'''
     var container = document.getElementById('sections');
     var label = document.getElementById('edition-label');
     var upd = document.getElementById('updated-label');
-    if (label) label.textContent = 'Custom edition · ' + active.length + ' feed' + (active.length === 1 ? '' : 's');
+    if (label) label.textContent = (isShared ? 'Shared edition · ' : 'Custom edition · ') + active.length + ' feed' + (active.length === 1 ? '' : 's');
     if (upd) upd.textContent = 'Updated just now';
     container.innerHTML = '<p class="loading-note">Setting the type… loading your feeds.</p>';
     Promise.all(active.map(function (f) {
@@ -317,16 +361,18 @@ SCRIPT_FEEDS = r'''
     })).then(function (results) {
       var html = '';
       liveData = {}; liveIdx = 0;
-      // dedupe across overlapping feeds: same link path or same long title
-      var seen = {};
-      function dedupeKey(a) {
+      // dedupe + cluster across overlapping feeds: same link path or same long title
+      var firstByKey = {};
+      function dedupeKeys(a) {
+        var keys = [];
         var m = /^https?:\/\/([^\/?#]+)([^?#]*)/i.exec(a.u || '');
         if (m) {
           var path = m[2].replace(/\/+$/, '').toLowerCase();
-          if (path) return (m[1] + path).toLowerCase();
+          if (path) keys.push((m[1] + path).toLowerCase());
         }
         var t = (a.t || '').toLowerCase().replace(/\s+/g, ' ').trim();
-        return t.length >= 25 ? t : null;
+        if (t.length >= 25) keys.push(t);
+        return keys;
       }
       results.forEach(function (r) {
         var head = '<div class="section-head"><span class="section-title">' + esc(r.f.n || 'Feed') + '</span>';
@@ -337,9 +383,15 @@ SCRIPT_FEEDS = r'''
         }
         var kept = [];
         r.items.forEach(function (a) {
-          var k = dedupeKey(a);
-          if (k && seen[k]) return;
-          if (k) seen[k] = 1;
+          var ks = dedupeKeys(a);
+          var first = null;
+          for (var i = 0; i < ks.length; i++) { if (firstByKey[ks[i]]) { first = firstByKey[ks[i]]; break; } }
+          if (first) {
+            if (!first.ai) first.ai = [];
+            if (first.ai.indexOf(r.f.n) < 0) first.ai.push(r.f.n);
+            return;
+          }
+          for (var j = 0; j < ks.length; j++) firstByKey[ks[j]] = a;
           kept.push(a);
         });
         if (!kept.length) {
@@ -356,6 +408,8 @@ SCRIPT_FEEDS = r'''
           '<div class="columns">' + cards + '</div></section>';
       });
       container.innerHTML = html;
+      if (window.__gazetteResetSearchCache) window.__gazetteResetSearchCache();
+      if (window.__gazetteRunSearch) window.__gazetteRunSearch();
     });
   }
 
@@ -374,6 +428,12 @@ SCRIPT_FEEDS = r'''
     titleEl.textContent = a.t;
     function draw(paras, note) {
       body.innerHTML = '';
+      if (a.ai && a.ai.length) {
+        var ai = document.createElement('p');
+        ai.className = 'also-in';
+        ai.textContent = 'Also in: ' + a.ai.join(', ');
+        body.appendChild(ai);
+      }
       var ps = paras && paras.length ? paras : [a.s || '(no summary available)'];
       ps.forEach(function (p) {
         var el = document.createElement('p');
@@ -397,6 +457,7 @@ SCRIPT_FEEDS = r'''
       fetchFeedText(a.u).then(function (html) {
         var paras = extractParas(html);
         if (paras.length) a.p = paras;
+        if (window.__gazetteInvalidateSearch) window.__gazetteInvalidateSearch(idx);
         if (dlg.open && titleEl.textContent === a.t) {
           kicker.textContent = a.p.length ? 'Full story' : 'Summary';
           draw(a.p, a.p.length ? '' : 'Full text unavailable for this site — summary shown. Use the link below for the source.');
@@ -447,6 +508,71 @@ SCRIPT_FEEDS = r'''
     localStorage.removeItem('gazette-feeds');
     location.reload();
   });
+
+  /* OPML import/export + shareable edition links */
+  function toOpml(feeds) {
+    function x(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    var lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<opml version="2.0">',
+      '<head><title>Feed Gazette edition</title></head>', '<body>'];
+    feeds.forEach(function (f) {
+      lines.push('<outline type="rss" text="' + x(f.n) + '" title="' + x(f.n) + '" xmlUrl="' + x(f.u) + '"/>');
+    });
+    lines.push('</body>', '</opml>');
+    return lines.join('\n');
+  }
+  document.getElementById('opml-export').addEventListener('click', function () {
+    var blob = new Blob([toOpml(active || DEFAULTS)], { type: 'text/x-opml' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'feed-gazette.opml';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+  document.getElementById('opml-import-btn').addEventListener('click', function () {
+    document.getElementById('opml-import').click();
+  });
+  document.getElementById('opml-import').addEventListener('change', function () {
+    var file = this.files[0];
+    this.value = '';
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var doc = new DOMParser().parseFromString(reader.result, 'text/xml');
+        if (doc.querySelector('parsererror')) throw new Error('not valid XML');
+        var feeds = [];
+        var outlines = doc.querySelectorAll('outline[xmlUrl]');
+        for (var i = 0; i < outlines.length; i++) {
+          feeds.push({
+            n: outlines[i].getAttribute('text') || outlines[i].getAttribute('title') || 'Feed',
+            u: outlines[i].getAttribute('xmlUrl').trim()
+          });
+        }
+        if (!feeds.length) { alert('No feeds found in that OPML file.'); return; }
+        active = feeds;
+        renderList();
+      } catch (e) { alert('Could not read OPML: ' + e.message); }
+    };
+    reader.readAsText(file);
+  });
+  document.getElementById('share-link').addEventListener('click', function () {
+    var url = location.origin + location.pathname + '#feeds=' + b64uEncode(JSON.stringify(active || DEFAULTS));
+    var btn = this;
+    function done() {
+      btn.textContent = 'Link copied!';
+      setTimeout(function () { btn.textContent = 'Copy share link'; }, 2000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done, function () { prompt('Copy this link:', url); });
+    } else {
+      prompt('Copy this link:', url);
+    }
+  });
+
   document.getElementById('settings-btn').addEventListener('click', function () {
     if (typeof sdlg.showModal === 'function') sdlg.showModal();
     else sdlg.setAttribute('open', '');
@@ -490,7 +616,7 @@ def render(sections, generated):
     # article data for the reader popup, keyed by idx
     data = {str(a["idx"]): {"t": a["title"], "d": fmt_date(a["pub"]),
                             "u": safe_link(a["link"]), "p": a.get("paras") or [],
-                            "s": a["desc"]}
+                            "s": a["desc"], "ai": a.get("also_in") or []}
             for sec in sections for a in sec["items"]}
     data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
 
@@ -636,6 +762,15 @@ body {{
 .article h2 a:hover {{ color: var(--accent); }}
 .dateline {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); margin-bottom: 0.4rem; }}
 .excerpt {{ font-size: 0.92rem; cursor: pointer; }}
+.also-in {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); margin-bottom: 0.4rem; }}
+.search-box {{
+  flex: 1 1 12rem; min-width: 8rem; max-width: 16rem;
+  background: var(--paper); border: 1px solid var(--rule); color: var(--ink);
+  font: inherit; font-size: 0.78rem; padding: 0.25rem 0.6rem;
+}}
+.search-box:focus {{ outline: none; border-color: var(--accent); }}
+#search-status {{ font-size: 0.75rem; color: var(--faint); font-style: italic; min-height: 1.1em; }}
+.feed-actions {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }}
 /* reader dialog */
 dialog.reader {{
   border: none; padding: 0; max-width: 720px; width: calc(100% - 2rem);
@@ -703,7 +838,9 @@ footer {{
   <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch theme">Theme: Paper</button>
   <button class="theme-toggle" id="font-toggle" type="button" aria-label="Switch font">Font: Classic</button>
   <button class="theme-toggle" id="settings-btn" type="button">Settings</button>
+  <input class="search-box" id="search-box" type="search" placeholder="Search stories ( / )" aria-label="Search stories">
 </div>
+<div id="search-status" role="status"></div>
 <div id="sections">
 {"".join(body)}
 </div>
@@ -741,7 +878,13 @@ footer {{
         <input id="feed-url" type="url" placeholder="https://example.com/feed.xml">
         <button id="feed-add" type="button">Add feed</button>
       </div>
-      <p class="settings-note">Feeds and full articles are fetched in your browser through a public CORS relay, so a few sites may refuse. RSS and Atom both work. Removing every feed restores the default edition.</p>
+      <div class="feed-actions">
+        <button id="opml-export" type="button">Export OPML</button>
+        <button id="opml-import-btn" type="button">Import OPML</button>
+        <input id="opml-import" type="file" accept=".opml,.xml,text/xml" hidden>
+        <button id="share-link" type="button">Copy share link</button>
+      </div>
+      <p class="settings-note">Feeds and full articles are fetched in your browser through a public CORS relay, so a few sites may refuse. RSS and Atom both work. Import replaces the list above; click Save &amp; rebuild to apply. Removing every feed restores the default edition.</p>
     </div>
     <div class="reader-foot">
       <button id="feed-reset" type="button">Reset to defaults</button>
@@ -796,6 +939,50 @@ footer {{
   }});
   updateFontLabel();
 
+  /* instant search across the embedded article data */
+  var searchBox = document.getElementById('search-box');
+  var searchStatus = document.getElementById('search-status');
+  var textCache = {{}};
+  function articleText(idx) {{
+    var a = resolveArticle(idx);
+    if (!a) return '';
+    var parts = [a.t, a.s];
+    if (a.p) for (var i = 0; i < a.p.length; i++) parts.push(a.p[i]);
+    if (a.ai) parts.push(a.ai.join(' '));
+    return parts.join(' ').toLowerCase();
+  }}
+  window.__gazetteInvalidateSearch = function (idx) {{ delete textCache[idx]; }};
+  window.__gazetteResetSearchCache = function () {{ textCache = {{}}; }};
+  function runSearch() {{
+    var q = (searchBox.value || '').trim().toLowerCase();
+    var total = 0;
+    var secs = document.querySelectorAll('#sections > section');
+    for (var s = 0; s < secs.length; s++) {{
+      var arts = secs[s].querySelectorAll('article');
+      var shown = 0;
+      for (var i = 0; i < arts.length; i++) {{
+        var idx = arts[i].querySelector('.art-link').getAttribute('data-idx');
+        var hit = !q || articleText(idx).indexOf(q) >= 0;
+        arts[i].style.display = hit ? '' : 'none';
+        if (hit) shown++;
+      }}
+      secs[s].style.display = shown ? '' : 'none';
+      total += shown;
+    }}
+    searchStatus.textContent = q ? (total + ' result' + (total === 1 ? '' : 's') + ' for "' + searchBox.value.trim() + '"') : '';
+  }}
+  window.__gazetteRunSearch = runSearch;
+  searchBox.addEventListener('input', runSearch);
+  searchBox.addEventListener('keydown', function (e) {{
+    if (e.key === 'Escape') {{ searchBox.value = ''; runSearch(); searchBox.blur(); }}
+  }});
+  document.addEventListener('keydown', function (e) {{
+    if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {{
+      e.preventDefault();
+      searchBox.focus();
+    }}
+  }});
+
   var els = {{
     kicker: document.getElementById('r-kicker'),
     title: document.getElementById('r-title'),
@@ -824,6 +1011,12 @@ footer {{
     els.date.textContent = a.d;
     els.src.href = a.u;
     els.body.innerHTML = '';
+    if (a.ai && a.ai.length) {{
+      var ai = document.createElement('p');
+      ai.className = 'also-in';
+      ai.textContent = 'Also in: ' + a.ai.join(', ');
+      els.body.appendChild(ai);
+    }}
     var paras = a.p.length ? a.p : [a.s];
     paras.forEach(function (p) {{
       var el = document.createElement('p');
@@ -890,17 +1083,26 @@ def dedupe_keys(a):
     return keys
 
 def dedupe_sections(sections):
-    """Drop stories already seen in an earlier section. Mutates in place."""
-    seen = set()
+    """Drop stories already seen in an earlier section, recording cross-feed coverage
+    on the first occurrence as article["also_in"] = [section names]. Mutates in place."""
+    seen = {}  # key -> first article that claimed it
     removed = 0
     for sec in sections:
         kept = []
         for a in sec["items"]:
             ks = dedupe_keys(a)
-            if any(k in seen for k in ks):
+            first = None
+            for k in ks:
+                if k in seen:
+                    first = seen[k]
+                    break
+            if first is not None:
                 removed += 1
+                if sec["name"] not in first.setdefault("also_in", []):
+                    first.setdefault("also_in", []).append(sec["name"])
                 continue
-            seen.update(ks)
+            for k in ks:
+                seen[k] = a
             kept.append(a)
         sec["items"] = kept
     return removed
