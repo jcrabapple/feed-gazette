@@ -1,6 +1,8 @@
 # Feed Gazette
 
-A single-file RSS-to-newspaper generator. Point it at any RSS or Atom feeds and it
+[![CI](https://github.com/jcrabapple/feed-gazette/actions/workflows/ci.yml/badge.svg)](https://github.com/jcrabapple/feed-gazette/actions/workflows/ci.yml)
+
+A single-file RSS/Atom-to-newspaper generator. Point it at any feeds and it
 renders a broadsheet-style static page: serif masthead, three-column layout, section
 rules, and a reader-mode popup for every story.
 
@@ -22,8 +24,17 @@ one output HTML file you can host anywhere static files are served.
   a personal RSS reader without touching anyone else's edition.
 - **Three themes** — Paper (default), Dark, and E-ink (pure black/white, grayscale
   images, no shadows). User choice persists in localStorage and applies pre-paint.
+- **Resilient builds** — a dead or malformed feed becomes a visible "unavailable"
+  section in the page instead of killing the build, so a cron refresh always ships
+  whatever it could fetch.
+- **RSS and Atom** — both formats parse at build time and in the browser.
+- **Deduplication** — the same story syndicated across overlapping feeds appears
+  once (matched by normalized link, or by title when the link differs).
 - **Full text at build time** — article bodies are pulled and embedded when the
   page is built, so the reader opens instantly with no network round-trip.
+- **Normal link behavior** — cmd-click / ctrl-click / middle-click on a headline
+  opens the source in a new tab, exactly as you'd expect; a plain tap opens the
+  reader popup.
 
 ## Quick start
 
@@ -58,9 +69,20 @@ labels which you're getting ("Full story" vs "Summary") and always links to the
 source.
 
 Visitor-added feeds (via the Settings panel) are fetched in the browser through a
-public CORS relay ([allorigins](https://allorigins.win)), since most feeds don't
-send CORS headers. Sites that block the relay show a visible error in their
-section.
+public CORS relay ([allorigins](https://allorigins.win)) with a 15-second timeout,
+since most feeds don't send CORS headers. Sites that block the relay show a visible
+error in their section.
+
+## Tests and CI
+
+```bash
+python -m unittest discover -s tests
+```
+
+30 tests cover feed parsing (RSS + Atom), date handling, full-text extraction,
+deduplication, feed-failure isolation, and HTML escaping (including
+`javascript:` link neutralization). CI runs the suite on Python 3.10 and 3.13 on
+every push and PR.
 
 ## Refreshing on a schedule
 

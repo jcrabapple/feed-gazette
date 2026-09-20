@@ -44,29 +44,58 @@ def strip_html(s):
             out.append(ch)
     return " ".join("".join(out).split())
 
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
+MEDIA_NS = {"media": "http://search.yahoo.com/mrss/"}
+
 def parse_feed(url):
-    raw = fetch(url)
+    return parse_feed_text(fetch(url))
+
+def parse_feed_text(raw):
+    """Parse RSS 2.0 or Atom XML bytes/text into a list of item dicts."""
     root = ET.fromstring(raw)
-    ns = {
-        "media": "http://search.yahoo.com/mrss/",
-        "dc": "http://purl.org/dc/elements/1.1/",
-    }
+    if root.tag == ATOM_NS + "feed" or root.tag == "feed":
+        return _parse_atom(root)
+    return _parse_rss(root)
+
+def _thumb_from(el):
+    media = el.find("media:thumbnail", MEDIA_NS)
+    if media is not None and media.get("url"):
+        return media.get("url")
+    enc = el.find("media:content", MEDIA_NS)
+    if enc is not None and enc.get("url"):
+        return enc.get("url")
+    return None
+
+def _parse_rss(root):
     items = []
     for item in root.iter("item"):
         title = strip_html(item.findtext("title") or "")
         link = (item.findtext("link") or "").strip()
         desc = strip_html(item.findtext("description") or "")
         pub = item.findtext("pubDate") or ""
-        thumb = None
-        media = item.find("media:thumbnail", ns)
-        if media is not None and media.get("url"):
-            thumb = media.get("url")
-        if not thumb:
-            enc = item.find("media:content", ns)
-            if enc is not None and enc.get("url"):
-                thumb = enc.get("url")
         items.append({"title": title, "link": link, "desc": desc,
-                      "pub": pub, "thumb": thumb})
+                      "pub": pub, "thumb": _thumb_from(item)})
+    return items
+
+def _parse_atom(root):
+    items = []
+    for entry in root.findall(ATOM_NS + "entry"):
+        title = strip_html(entry.findtext(ATOM_NS + "title") or "")
+        link = ""
+        for le in entry.findall(ATOM_NS + "link"):
+            href = (le.get("href") or "").strip()
+            rel = le.get("rel") or "alternate"
+            if href and rel == "alternate":
+                link = href
+                break
+            if href and not link:
+                link = href  # keep first link as fallback
+        desc = strip_html(entry.findtext(ATOM_NS + "summary")
+                          or entry.findtext(ATOM_NS + "content") or "")
+        pub = (entry.findtext(ATOM_NS + "published")
+               or entry.findtext(ATOM_NS + "updated") or "")
+        items.append({"title": title, "link": link, "desc": desc,
+                      "pub": pub, "thumb": _thumb_from(entry)})
     return items
 
 
@@ -112,19 +141,35 @@ def fetch_fulltext(link):
     return p.paras[:MAX_PARAS]
 
 def fmt_date(pub):
+    if not pub:
+        return ""
     # RFC 822 like "Fri, 19 Sep 2026 14:22:00 GMT"
     for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"):
         try:
-            dt = datetime.strptime(pub, fmt)
+            dt = datetime.strptime(pub.strip(), fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc).strftime("%b %d, %Y · %H:%M UTC")
         except ValueError:
             continue
-    return ""
+    # ISO 8601 (Atom) like "2026-09-19T14:22:00Z" or "2026-09-19T14:22:00+02:00"
+    try:
+        dt = datetime.fromisoformat(pub.strip().replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%b %d, %Y · %H:%M UTC")
+    except ValueError:
+        return ""
 
 def esc(s):
     return html.escape(s or "", quote=True)
+
+def safe_link(url):
+    """Only http(s) and mailto links survive; anything else becomes inert."""
+    u = (url or "").strip()
+    if re.match(r"^https?://", u, re.I) or u.lower().startswith("mailto:"):
+        return u
+    return "#"
 
 def article_html(a, lead=False, with_img=True):
     d = fmt_date(a["pub"])
@@ -136,7 +181,7 @@ def article_html(a, lead=False, with_img=True):
     cls = "article lead" if lead else "article"
     return f'''<article class="{cls}">
 {img}
-<h2><a href="{esc(a["link"])}" data-idx="{a["idx"]}" class="art-link">{esc(a["title"])}</a></h2>
+<h2><a href="{esc(safe_link(a["link"]))}" data-idx="{a["idx"]}" class="art-link">{esc(a["title"])}</a></h2>
 <p class="dateline">{esc(d)}</p>
 <p class="excerpt" data-idx="{a["idx"]}">{esc(a["desc"])}</p>
 </article>'''
@@ -175,6 +220,10 @@ SCRIPT_FEEDS = r'''
   function txt(el, tag) {
     var e = el.getElementsByTagName(tag)[0];
     return e ? e.textContent.trim() : '';
+  }
+  function safeLink(u) {
+    u = (u || '').trim();
+    return (/^https?:\/\//i.test(u) || u.toLowerCase().indexOf('mailto:') === 0) ? u : '#';
   }
 
   function tryFetchText(url) {
@@ -250,7 +299,7 @@ SCRIPT_FEEDS = r'''
     }
     var cls = lead ? 'article lead' : 'article';
     return '<article class="' + cls + '">' + img +
-      '<h2><a href="' + esc(a.u) + '" data-idx="' + esc(idx) + '" class="art-link">' + esc(a.t) + '</a></h2>' +
+      '<h2><a href="' + esc(safeLink(a.u)) + '" data-idx="' + esc(idx) + '" class="art-link">' + esc(a.t) + '</a></h2>' +
       '<p class="dateline">' + esc(a.d) + '</p>' +
       '<p class="excerpt" data-idx="' + esc(idx) + '">' + esc(a.s) + '</p></article>';
   }
@@ -268,6 +317,17 @@ SCRIPT_FEEDS = r'''
     })).then(function (results) {
       var html = '';
       liveData = {}; liveIdx = 0;
+      // dedupe across overlapping feeds: same link path or same long title
+      var seen = {};
+      function dedupeKey(a) {
+        var m = /^https?:\/\/([^\/?#]+)([^?#]*)/i.exec(a.u || '');
+        if (m) {
+          var path = m[2].replace(/\/+$/, '').toLowerCase();
+          if (path) return (m[1] + path).toLowerCase();
+        }
+        var t = (a.t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        return t.length >= 25 ? t : null;
+      }
       results.forEach(function (r) {
         var head = '<div class="section-head"><span class="section-title">' + esc(r.f.n || 'Feed') + '</span>';
         if (r.error) {
@@ -275,17 +335,24 @@ SCRIPT_FEEDS = r'''
             '<p class="loading-note">Could not load this feed (' + esc(r.error) + '). It may block the relay — check the URL or try another source.</p></section>';
           return;
         }
-        if (!r.items.length) {
+        var kept = [];
+        r.items.forEach(function (a) {
+          var k = dedupeKey(a);
+          if (k && seen[k]) return;
+          if (k) seen[k] = 1;
+          kept.push(a);
+        });
+        if (!kept.length) {
           html += '<section class="section">' + head + '<span class="section-count">0 stories</span></div>' +
             '<p class="loading-note">Feed loaded but returned no items.</p></section>';
           return;
         }
-        var cards = r.items.map(function (a, i) {
+        var cards = kept.map(function (a, i) {
           var idx = String(liveIdx++);
           liveData[idx] = a;
           return articleCard(a, idx, i === 0, i < 3);
         }).join('');
-        html += '<section class="section">' + head + '<span class="section-count">' + r.items.length + ' stories</span></div>' +
+        html += '<section class="section">' + head + '<span class="section-count">' + kept.length + ' stories</span></div>' +
           '<div class="columns">' + cards + '</div></section>';
       });
       container.innerHTML = html;
@@ -303,7 +370,7 @@ SCRIPT_FEEDS = r'''
     var kicker = document.getElementById('r-kicker');
     var titleEl = document.getElementById('r-title');
     document.getElementById('r-date').textContent = a.d;
-    document.getElementById('r-src').href = a.u;
+    document.getElementById('r-src').href = safeLink(a.u);
     titleEl.textContent = a.t;
     function draw(paras, note) {
       body.innerHTML = '';
@@ -402,21 +469,29 @@ def render(sections, generated):
     feeds_script = SCRIPT_FEEDS.replace("__DEFAULT_FEEDS__", defaults_js)
     now = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
     body = []
-    for name, items in sections:
+    for sec in sections:
+        if sec["error"]:
+            body.append(f'''<section class="section">
+<div class="section-head"><span class="section-title">{esc(sec["name"])}</span>
+<span class="section-count">unavailable</span></div>
+<p class="loading-note">This feed could not be loaded ({esc(sec["error"])}). The rest of the edition is unaffected.</p>
+</section>''')
+            continue
+        items = sec["items"]
         cards = []
         for i, a in enumerate(items):
             cards.append(article_html(a, lead=(i == 0), with_img=(i < 3)))
         body.append(f'''<section class="section">
-<div class="section-head"><span class="section-title">{esc(name)}</span>
+<div class="section-head"><span class="section-title">{esc(sec["name"])}</span>
 <span class="section-count">{len(items)} stories</span></div>
 <div class="columns">{"".join(cards)}</div>
 </section>''')
 
     # article data for the reader popup, keyed by idx
     data = {str(a["idx"]): {"t": a["title"], "d": fmt_date(a["pub"]),
-                            "u": a["link"], "p": a.get("paras") or [],
+                            "u": safe_link(a["link"]), "p": a.get("paras") or [],
                             "s": a["desc"]}
-            for _, items in sections for a in items}
+            for sec in sections for a in sec["items"]}
     data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
 
     return f'''<!DOCTYPE html>
@@ -772,6 +847,8 @@ footer {{
   }}
 
   document.addEventListener('click', function (e) {{
+    // let modified clicks and non-left clicks through (cmd-click, middle-click, etc.)
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     var link = e.target.closest('.art-link');
     if (link) {{
       e.preventDefault();
@@ -796,18 +873,68 @@ footer {{
 </body>
 </html>'''
 
+def dedupe_keys(a):
+    """All stable identities for a story: normalized link path and/or long title."""
+    keys = []
+    link = (a.get("link") or "").strip()
+    m = re.match(r"^https?://([^/?#]+)([^?#]*)", link, re.I)
+    if m:
+        host = m.group(1).lower()
+        path = m.group(2).rstrip("/").lower()
+        if path:
+            keys.append(host + path)
+    t = re.sub(r"\s+", " ", (a.get("title") or "")).strip().lower()
+    # short titles are too generic to dedupe on safely
+    if len(t) >= 25:
+        keys.append(t)
+    return keys
+
+def dedupe_sections(sections):
+    """Drop stories already seen in an earlier section. Mutates in place."""
+    seen = set()
+    removed = 0
+    for sec in sections:
+        kept = []
+        for a in sec["items"]:
+            ks = dedupe_keys(a)
+            if any(k in seen for k in ks):
+                removed += 1
+                continue
+            seen.update(ks)
+            kept.append(a)
+        sec["items"] = kept
+    return removed
+
+def collect_sections():
+    """Fetch and parse every feed. A dead feed becomes an error entry, not a crash."""
+    out = []
+    for name, url in FEEDS:
+        try:
+            items = parse_feed(url)
+        except Exception as e:
+            print(f"feed error: {name} ({url}): {e}")
+            out.append({"name": name, "url": url, "items": [], "error": str(e)})
+            continue
+        if not items:
+            print(f"feed error: {name} ({url}): feed returned no items")
+            out.append({"name": name, "url": url, "items": [], "error": "feed returned no items"})
+            continue
+        print(f"{name}: {len(items)} items")
+        out.append({"name": name, "url": url, "items": items, "error": None})
+    removed = dedupe_sections(out)
+    return out, removed
+
 def main():
-    sections = []
+    sections, removed = collect_sections()
+    if removed:
+        print(f"dedupe: removed {removed} duplicate stories")
     idx = 0
     jobs = []
-    for name, url in FEEDS:
-        items = parse_feed(url)
-        print(f"{name}: {len(items)} items")
-        for a in items:
+    for sec in sections:
+        for a in sec["items"]:
             a["idx"] = idx
             idx += 1
             jobs.append(a)
-        sections.append((name, items))
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         paras_list = list(ex.map(lambda a: fetch_fulltext(a["link"]), jobs))
