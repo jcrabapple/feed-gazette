@@ -44,7 +44,16 @@ one output HTML file you can host anywhere static files are served.
   Settings, or export your edition as OPML. `feeds.opml` in the project directory
   works as a build-time feed source too (after `feeds.json`).
 - **Shareable editions** — "Copy share link" in Settings encodes the feed list in
-  the URL hash; anyone opening that link gets the same edition.
+  the URL hash. Anyone opening that link gets a **preview** with a
+  "Use this edition" banner — nothing is saved until they accept.
+- **Offline reading** — a service worker caches the last edition you opened;
+  the full article corpus is embedded in the page, so it works fully offline.
+- **Guardrails for big editions** — feed lists are capped at 20 and URLs at 2048
+  characters (build-time and in Settings); visitor editions fetch feeds through
+  a small concurrency pool instead of all at once.
+- **Clean full text** — boilerplate ("This video can not be played", image
+  captions, promo blocks) is filtered out of extraction, and the reader labels
+  confidence: "Full story", "Partial story", or "Summary".
 - **Self-updating on GitHub Pages** — a scheduled workflow rebuilds and deploys
   the edition every 6 hours with zero infrastructure (see below).
 
@@ -80,21 +89,30 @@ pages extract fine; JS-only pages fall back to the feed summary. The reader popu
 labels which you're getting ("Full story" vs "Summary") and always links to the
 source.
 
-Visitor-added feeds (via the Settings panel) are fetched in the browser through a
-public CORS relay ([allorigins](https://allorigins.win)) with a 15-second timeout,
-since most feeds don't send CORS headers. Sites that block the relay show a visible
-error in their section.
+Visitor-added feeds (via the Settings panel) are fetched in the browser, directly
+when the site sends CORS headers and otherwise through a public CORS relay —
+[allorigins](https://allorigins.win), with [CodeTabs](https://codetabs.com) as a
+fallback — with a 15-second timeout per attempt. **Be aware that those services
+can see the URLs of your custom feeds and of any articles you open.** Sites that
+block the relays show a visible error in their section.
 
 ## Tests and CI
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests -p 'test_gazette.py'   # 39 stdlib tests
+pip install -r requirements-dev.txt
+playwright install --with-deps chromium
+pytest tests/browser                                       # 15 browser tests
 ```
 
-30 tests cover feed parsing (RSS + Atom), date handling, full-text extraction,
-deduplication, feed-failure isolation, and HTML escaping (including
-`javascript:` link neutralization). CI runs the suite on Python 3.10 and 3.13 on
-every push and PR.
+The stdlib suite covers feed parsing (RSS + Atom), date handling, full-text
+extraction and boilerplate filtering, deduplication and clustering, feed-failure
+isolation, and HTML escaping (including `javascript:` link neutralization). The
+Playwright suite covers the shared-link preview flow, OPML import/export,
+instant search, Settings, the relay fallback chain, modifier-click behavior,
+and the offline service worker. CI runs the stdlib suite on Python 3.10/3.13
+and the browser suite on Chromium for every push and PR; the Pages deploy also
+runs the stdlib suite before every publish.
 
 ## Refreshing on a schedule
 

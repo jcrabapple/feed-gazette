@@ -295,5 +295,44 @@ class TestOpml(unittest.TestCase):
         self.assertIn("Also in: Tech, Science", html)
 
 
+class TestCleanParas(unittest.TestCase):
+    def test_drops_video_fallbacks_and_captions(self):
+        raw = [
+            "This video can not be played due to technical problems.",
+            "Image caption, A dog sits on a roof in winter",
+            "The actual body paragraph of the story starts here.",
+            "Watch: the moment the rocket lifts off",
+            "The actual body paragraph of the story starts here.",  # dupe
+            "Short",
+        ]
+        self.assertEqual(build._clean_paras(raw),
+                         ["The actual body paragraph of the story starts here."])
+
+    def test_keeps_normal_paragraphs(self):
+        raw = ["A perfectly ordinary paragraph of some length here.",
+               "Another ordinary paragraph follows this one closely."]
+        self.assertEqual(build._clean_paras(raw), raw)
+
+    def test_fetch_fulltext_applies_filtering(self):
+        page = """<html><main>
+        <p class="Paragraph">This video can not be played right now.</p>
+        <p class="Paragraph">Image caption, press conference in the capital</p>
+        <p class="Paragraph">Ministers announced the new policy on Tuesday morning.</p>
+        </main></html>"""
+        with mock.patch.object(build, "fetch", return_value=page.encode()):
+            self.assertEqual(build.fetch_fulltext("https://x.org/1"),
+                             ["Ministers announced the new policy on Tuesday morning."])
+
+
+class TestCaps(unittest.TestCase):
+    def test_cap_feeds_truncates(self):
+        feeds = [("F%d" % i, "https://x.org/%d" % i) for i in range(50)]
+        self.assertEqual(len(build.cap_feeds(feeds)), build.MAX_FEEDS)
+
+    def test_cap_feeds_passthrough(self):
+        feeds = [("A", "https://x.org/1")]
+        self.assertEqual(build.cap_feeds(feeds), feeds)
+
+
 if __name__ == "__main__":
     unittest.main()

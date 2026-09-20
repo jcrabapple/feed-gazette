@@ -27,6 +27,32 @@ TAGLINE = "All the news that fits, we syndicate."
 OUT = Path(__file__).parent / "site"
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
 MAX_PARAS = 40
+MAX_FEEDS = 20
+MAX_URL_LEN = 2048
+
+BOILERPLATE_PREFIXES = (
+    "this video can", "image caption", "image source", "more on this story",
+    "related topics", "follow us on", "watch: ", "listen: ", "copyright ",
+)
+MIN_PARA_LEN = 15
+
+
+def _clean_paras(paras):
+    """Drop boilerplate (video fallbacks, captions, promos), dupes, and stubs."""
+    out, seen = [], set()
+    for p in paras:
+        norm = p.strip()
+        if len(norm) < MIN_PARA_LEN:
+            continue
+        low = norm.lower()
+        if any(low.startswith(bp) for bp in BOILERPLATE_PREFIXES):
+            continue
+        key = low[:120]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(norm)
+    return out
 
 def fetch(url, timeout=30):
     req = urllib.request.Request(url, headers=UA)
@@ -60,6 +86,46 @@ def parse_opml(text):
 
 if not FEEDS_FILE.exists() and OPML_FILE.exists():
     FEEDS = parse_opml(OPML_FILE.read_text(encoding="utf-8"))
+
+def cap_feeds(feeds):
+    """Editions above MAX_FEEDS smell like a mistake, not a feed list."""
+    return feeds[:MAX_FEEDS]
+
+FEEDS = cap_feeds(FEEDS)
+
+SW_JS = """/* Feed Gazette offline cache: stale-while-revalidate for the edition page,
+   cache-first for fonts and images. The whole article corpus is embedded in
+   the HTML, so the last edition you opened works fully offline. */
+const CACHE = 'gazette-__VERSION__';
+const CORE = ['./', './index.html'];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys()
+      .then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+self.addEventListener('fetch', (e) => {
+  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  const cacheable = url.origin === location.origin
+    || url.hostname.endsWith('googleapis.com')
+    || url.hostname.endsWith('gstatic.com');
+  if (!cacheable) return;
+  e.respondWith(caches.open(CACHE).then(async (cache) => {
+    const hit = await cache.match(e.request);
+    const fetching = fetch(e.request).then((resp) => {
+      if (resp.ok || resp.type === 'opaque') cache.put(e.request, resp.clone());
+      return resp;
+    }).catch(() => hit);
+    return hit || fetching;
+  }));
+});
+"""
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 MEDIA_NS = {"media": "http://search.yahoo.com/mrss/"}
@@ -155,7 +221,7 @@ def fetch_fulltext(link):
         p.feed(scope)
     except Exception:
         return []
-    return p.paras[:MAX_PARAS]
+    return _clean_paras(p.paras[:MAX_PARAS])
 
 def fmt_date(pub):
     if not pub:
@@ -216,8 +282,10 @@ SCRIPT_FEEDS = r'''
   var RELAY2 = 'https://api.codetabs.com/v1/proxy?quest=';
   var liveData = {};
   var liveIdx = 0;
-  var active = null;
-  var isShared = false;
+  var active = null;        // saved edition (localStorage)
+  var sharedPreview = null; // a #feeds link: rendered but NOT saved until accepted
+  var MAX_FEEDS = 20;
+  var MAX_URL_LEN = 2048;
   function b64uEncode(s) {
     return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
@@ -226,24 +294,21 @@ SCRIPT_FEEDS = r'''
     while (s.length % 4) s += '=';
     return decodeURIComponent(escape(atob(s)));
   }
-  // a shared edition in the URL hash wins over saved settings
+  // a shared edition in the URL hash: preview only, never auto-saves
   var hashMatch = /[#&]feeds=([^&]+)/.exec(location.hash);
   if (hashMatch) {
     try {
       var arr = JSON.parse(b64uDecode(hashMatch[1]));
-      if (Array.isArray(arr) && arr.length && arr.every(function (f) { return f && f.u; })) {
-        active = arr;
-        isShared = true;
-        try { localStorage.setItem('gazette-feeds', JSON.stringify(arr)); } catch (e) {}
+      if (Array.isArray(arr) && arr.length && arr.every(function (f) { return f && f.u && String(f.u).length <= MAX_URL_LEN; })) {
+        sharedPreview = arr.slice(0, MAX_FEEDS);
       }
     } catch (e) {}
   }
-  if (!active) {
-    try {
-      var saved = JSON.parse(localStorage.getItem('gazette-feeds') || 'null');
-      if (Array.isArray(saved) && saved.length && saved.every(function (f) { return f && f.u; })) active = saved;
-    } catch (e) {}
-  }
+  try {
+    var saved = JSON.parse(localStorage.getItem('gazette-feeds') || 'null');
+    if (Array.isArray(saved) && saved.length && saved.every(function (f) { return f && f.u; })) active = saved;
+  } catch (e) {}
+  var viewing = sharedPreview || active;
 
   function esc(s) {
     var d = document.createElement('div');
@@ -326,17 +391,40 @@ SCRIPT_FEEDS = r'''
     return out;
   }
 
+  var BOILERPLATE = ['this video can', 'image caption', 'image source', 'more on this story',
+    'related topics', 'follow us on', 'watch: ', 'listen: ', 'copyright '];
   function extractParas(html) {
     var doc = new DOMParser().parseFromString(html, 'text/html');
     var root = doc.querySelector('main') || doc.querySelector('article') || doc.body;
     if (!root) return [];
     var out = [];
+    var seen = {};
     var ps = root.querySelectorAll('p');
     for (var i = 0; i < ps.length && out.length < 40; i++) {
       var t = (ps[i].textContent || '').replace(/\s+/g, ' ').trim();
-      if (t.length > 40) out.push(t);
+      if (t.length < 40) continue;
+      var low = t.toLowerCase();
+      var skip = false;
+      for (var b = 0; b < BOILERPLATE.length; b++) { if (low.indexOf(BOILERPLATE[b]) === 0) { skip = true; break; } }
+      if (skip || seen[low.slice(0, 120)]) continue;
+      seen[low.slice(0, 120)] = true;
+      out.push(t);
     }
     return out;
+  }
+
+  /* small concurrency pool so large editions don't fire 20 parallel fetches */
+  function pooled(tasks, limit) {
+    var results = new Array(tasks.length);
+    var i = 0;
+    function worker() {
+      if (i >= tasks.length) return Promise.resolve();
+      var cur = i++;
+      return Promise.resolve(tasks[cur]()).then(function (r) { results[cur] = r; }).then(worker);
+    }
+    var workers = [];
+    for (var k = 0; k < Math.min(limit, tasks.length); k++) workers.push(worker());
+    return Promise.all(workers).then(function () { return results; });
   }
 
   function articleCard(a, idx, lead, withImg) {
@@ -356,13 +444,16 @@ SCRIPT_FEEDS = r'''
     var container = document.getElementById('sections');
     var label = document.getElementById('edition-label');
     var upd = document.getElementById('updated-label');
-    if (label) label.textContent = (isShared ? 'Shared edition · ' : 'Custom edition · ') + active.length + ' feed' + (active.length === 1 ? '' : 's');
+    if (label) label.textContent = (sharedPreview ? 'Shared preview · ' : 'Custom edition · ') + viewing.length + ' feed' + (viewing.length === 1 ? '' : 's');
     if (upd) upd.textContent = 'Updated just now';
     container.innerHTML = '<p class="loading-note">Setting the type… loading your feeds.</p>';
-    Promise.all(active.map(function (f) {
-      return fetchFeedText(f.u).then(function (t) { return { f: f, items: parseFeedXml(t) }; })
-        .catch(function (err) { return { f: f, error: (err && err.message) || 'failed to load' }; });
-    })).then(function (results) {
+    var tasks = viewing.map(function (f) {
+      return function () {
+        return fetchFeedText(f.u).then(function (t) { return { f: f, items: parseFeedXml(t) }; })
+          .catch(function (err) { return { f: f, error: (err && err.message) || 'failed to load' }; });
+      };
+    });
+    pooled(tasks, 4).then(function (results) {
       var html = '';
       liveData = {}; liveIdx = 0;
       // dedupe + cluster across overlapping feeds: same link path or same long title
@@ -463,7 +554,7 @@ SCRIPT_FEEDS = r'''
         if (paras.length) a.p = paras;
         if (window.__gazetteInvalidateSearch) window.__gazetteInvalidateSearch(idx);
         if (dlg.open && titleEl.textContent === a.t) {
-          kicker.textContent = a.p.length ? 'Full story' : 'Summary';
+          kicker.textContent = a.p.length >= 3 ? 'Full story' : (a.p.length ? 'Partial story' : 'Summary');
           draw(a.p, a.p.length ? '' : 'Full text unavailable for this site — summary shown. Use the link below for the source.');
         }
       }).catch(function () {
@@ -475,6 +566,36 @@ SCRIPT_FEEDS = r'''
   /* settings dialog */
   var sdlg = document.getElementById('settings');
   var listEl = document.getElementById('feed-list');
+
+  /* shared-edition preview: nothing is saved until the visitor says yes */
+  function showSharedBanner() {
+    var banner = document.createElement('div');
+    banner.id = 'shared-banner';
+    banner.innerHTML = '<span>Someone shared this edition (' + viewing.length + ' feed' +
+      (viewing.length === 1 ? '' : 's') + '). Preview only — your settings are untouched.</span>' +
+      '<button id="shared-use" type="button">Use this edition</button>' +
+      '<button id="shared-dismiss" type="button">Dismiss</button>';
+    var bar = document.querySelector('.dateline-bar');
+    bar.parentNode.insertBefore(banner, bar.nextSibling);
+    document.getElementById('shared-use').addEventListener('click', function () {
+      adoptPreview();
+      try { localStorage.setItem('gazette-feeds', JSON.stringify(active)); } catch (e) {}
+      var label = document.getElementById('edition-label');
+      if (label) label.textContent = 'Custom edition · ' + active.length + ' feed' + (active.length === 1 ? '' : 's');
+    });
+    document.getElementById('shared-dismiss').addEventListener('click', function () {
+      location.hash = '';
+      location.reload();
+    });
+  }
+  function adoptPreview() {
+    if (!sharedPreview) return;
+    active = sharedPreview.slice();
+    viewing = active;
+    sharedPreview = null;
+    var b = document.getElementById('shared-banner');
+    if (b) b.remove();
+  }
   function renderList() {
     var feeds = active || DEFAULTS;
     listEl.innerHTML = feeds.map(function (f, i) {
@@ -490,9 +611,12 @@ SCRIPT_FEEDS = r'''
     var n = document.getElementById('feed-name').value.trim() || 'Feed';
     var u = document.getElementById('feed-url').value.trim();
     if (!/^https?:\/\//i.test(u)) { alert('Feed URL must start with http:// or https://'); return; }
+    if (u.length > MAX_URL_LEN) { alert('That URL is implausibly long for a feed (max ' + MAX_URL_LEN + ' chars).'); return; }
     var feeds = (active || []).slice();
+    if (feeds.length >= MAX_FEEDS) { alert('Editions are capped at ' + MAX_FEEDS + ' feeds. Remove one first.'); return; }
     feeds.push({ n: n, u: u });
     active = feeds;
+    viewing = active;
     renderList();
     document.getElementById('feed-name').value = '';
     document.getElementById('feed-url').value = '';
@@ -527,7 +651,7 @@ SCRIPT_FEEDS = r'''
     return lines.join('\n');
   }
   document.getElementById('opml-export').addEventListener('click', function () {
-    var blob = new Blob([toOpml(active || DEFAULTS)], { type: 'text/x-opml' });
+    var blob = new Blob([toOpml(viewing || DEFAULTS)], { type: 'text/x-opml' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'feed-gazette.opml';
@@ -557,14 +681,19 @@ SCRIPT_FEEDS = r'''
           });
         }
         if (!feeds.length) { alert('No feeds found in that OPML file.'); return; }
+        if (feeds.length > MAX_FEEDS) {
+          alert('That OPML has ' + feeds.length + ' feeds; keeping the first ' + MAX_FEEDS + '.');
+          feeds = feeds.slice(0, MAX_FEEDS);
+        }
         active = feeds;
+        viewing = active;
         renderList();
       } catch (e) { alert('Could not read OPML: ' + e.message); }
     };
     reader.readAsText(file);
   });
   document.getElementById('share-link').addEventListener('click', function () {
-    var url = location.origin + location.pathname + '#feeds=' + b64uEncode(JSON.stringify(active || DEFAULTS));
+    var url = location.origin + location.pathname + '#feeds=' + b64uEncode(JSON.stringify(viewing || DEFAULTS));
     var btn = this;
     function done() {
       btn.textContent = 'Link copied!';
@@ -578,6 +707,7 @@ SCRIPT_FEEDS = r'''
   });
 
   document.getElementById('settings-btn').addEventListener('click', function () {
+    adoptPreview(); // opening Settings means engaging with the shared edition
     if (typeof sdlg.showModal === 'function') sdlg.showModal();
     else sdlg.setAttribute('open', '');
   });
@@ -589,7 +719,10 @@ SCRIPT_FEEDS = r'''
     if (e.target === sdlg) { if (typeof sdlg.close === 'function') sdlg.close(); else sdlg.removeAttribute('open'); }
   });
 
-  if (active) loadEdition();
+  if (viewing) {
+    if (sharedPreview) showSharedBanner();
+    loadEdition();
+  }
 })();
 </script>
 '''
@@ -775,6 +908,18 @@ body {{
 .search-box:focus {{ outline: none; border-color: var(--accent); }}
 #search-status {{ font-size: 0.75rem; color: var(--faint); font-style: italic; min-height: 1.1em; }}
 .feed-actions {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }}
+#shared-banner {{
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  border: 1px solid var(--rule); background: var(--paper);
+  padding: 0.5rem 0.8rem; margin: 0.5rem 0 0.25rem;
+  font-size: 0.82rem; font-style: italic; color: var(--faint);
+}}
+#shared-banner button {{
+  background: none; border: 1px solid var(--rule); color: var(--ink);
+  font: inherit; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 0.25rem 0.7rem; cursor: pointer; font-style: normal;
+}}
+#shared-banner button:hover {{ color: var(--accent); border-color: var(--accent); }}
 /* reader dialog */
 dialog.reader {{
   border: none; padding: 0; max-width: 720px; width: calc(100% - 2rem);
@@ -888,7 +1033,7 @@ footer {{
         <input id="opml-import" type="file" accept=".opml,.xml,text/xml" hidden>
         <button id="share-link" type="button">Copy share link</button>
       </div>
-      <p class="settings-note">Feeds and full articles are fetched in your browser through a public CORS relay, so a few sites may refuse. RSS and Atom both work. Import replaces the list above; click Save &amp; rebuild to apply. Removing every feed restores the default edition.</p>
+      <p class="settings-note">RSS and Atom both work. When a feed or article can&rsquo;t be fetched directly, your browser asks a public CORS relay (AllOrigins, with CodeTabs as fallback) &mdash; those services can see the URLs of your feeds and any articles you open. Editions are capped at 20 feeds. Import replaces the list above; click Save &amp; rebuild to apply. Removing every feed restores the default edition.</p>
     </div>
     <div class="reader-foot">
       <button id="feed-reset" type="button">Reset to defaults</button>
@@ -1010,7 +1155,7 @@ footer {{
     if (!a) return;
     if (a.live && typeof window.__gazetteOpen === 'function') {{ window.__gazetteOpen(idx); return; }}
     lastScrollY = window.scrollY;
-    els.kicker.textContent = a.p.length ? 'Full story' : 'Summary';
+    els.kicker.textContent = a.p.length >= 3 ? 'Full story' : (a.p.length ? 'Partial story' : 'Summary');
     els.title.textContent = a.t;
     els.date.textContent = a.d;
     els.src.href = a.u;
@@ -1064,6 +1209,11 @@ footer {{
     if (e.target === dlg) close();  // backdrop tap
   }});
   // Esc closes natively via dialog; nothing extra needed
+
+  /* offline: cache the edition for the next visit */
+  if ('serviceWorker' in navigator) {{
+    try {{ navigator.serviceWorker.register('./sw.js'); }} catch (e) {{}}
+  }}
 }})();
 </script>
 {feeds_script}
@@ -1154,7 +1304,9 @@ def main():
     generated = datetime.now(timezone.utc).strftime("%H:%M")
     (OUT).mkdir(parents=True, exist_ok=True)
     (OUT / "index.html").write_text(render(sections, generated), encoding="utf-8")
-    print(f"wrote {OUT / 'index.html'}")
+    sw_version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    (OUT / "sw.js").write_text(SW_JS.replace("__VERSION__", sw_version), encoding="utf-8")
+    print(f"wrote {OUT / 'index.html'} + sw.js")
 
 if __name__ == "__main__":
     main()
