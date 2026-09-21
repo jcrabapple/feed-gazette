@@ -67,7 +67,12 @@ class TestSettings:
         page.click("#feed-add")
         assert page.eval_on_selector_all("#feed-list .feed-row", "els => els.length") == 1
         page.click("#feed-save")
-        page.wait_for_selector("#sections article", timeout=15000)
+        page.wait_for_load_state("load")
+        # the static fixture page already has articles; wait for the custom
+        # edition label instead of article nodes, which exist in both
+        page.wait_for_function(
+            "document.getElementById('edition-label').textContent.toLowerCase().indexOf('custom edition') >= 0",
+            timeout=15000)
         assert "custom edition" in page.inner_text("#edition-label").lower()
         # remove it again and confirm localStorage is cleared
         page.click("#settings-btn")
