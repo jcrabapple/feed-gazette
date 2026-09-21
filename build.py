@@ -280,6 +280,7 @@ SCRIPT_FEEDS = r'''
   var DEFAULTS = __DEFAULT_FEEDS__;
   var RELAY = 'https://api.allorigins.win/raw?url=';
   var RELAY2 = 'https://api.codetabs.com/v1/proxy?quest=';
+  var RELAY3 = 'https://r.jina.ai/'; // markdown text extraction service, article URLs only
   var liveData = {};
   var liveIdx = 0;
   var active = null;        // saved edition (localStorage)
@@ -411,6 +412,36 @@ SCRIPT_FEEDS = r'''
       out.push(t);
     }
     return out;
+  }
+
+  /* r.jina.ai returns pre-extracted markdown; turn it into clean paragraphs */
+  function parseJinaMarkdown(text) {
+    var out = [];
+    var seen = {};
+    var chunks = text.split(/\n{2,}/);
+    for (var i = 0; i < chunks.length && out.length < 40; i++) {
+      var t = chunks[i].trim();
+      if (!t || t.length < 40) continue;
+      if (/^(#|!|\[|Title:|URL Source:|Published Time:|Markdown Content:|-|\||\d+\. )/.test(t)) continue;
+      t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/\*\*/g, '').replace(/^>\s*/, '');
+      if (t.length < 40) continue;
+      var low = t.toLowerCase();
+      var skip = false;
+      for (var b = 0; b < BOILERPLATE.length; b++) { if (low.indexOf(BOILERPLATE[b]) === 0) { skip = true; break; } }
+      if (skip || seen[low.slice(0, 120)]) continue;
+      seen[low.slice(0, 120)] = true;
+      out.push(t);
+    }
+    return out;
+  }
+
+  /* article full text: HTML relays first (direct, allorigins, codetabs),
+     then the markdown extractor when every relay is down or thin */
+  function fetchArticleParas(url) {
+    return fetchFeedText(url).then(extractParas, function () { return []; }).then(function (paras) {
+      if (paras.length) return paras;
+      return tryFetchText(RELAY3 + url).then(parseJinaMarkdown);
+    });
   }
 
   /* small concurrency pool so large editions don't fire 20 parallel fetches */
@@ -549,8 +580,7 @@ SCRIPT_FEEDS = r'''
     if (!a.p.length && !a.tried) {
       a.tried = true;
       if (!a.u) { draw(null, 'No article link in this feed item — summary only.'); return; }
-      fetchFeedText(a.u).then(function (html) {
-        var paras = extractParas(html);
+      fetchArticleParas(a.u).then(function (paras) {
         if (paras.length) a.p = paras;
         if (window.__gazetteInvalidateSearch) window.__gazetteInvalidateSearch(idx);
         if (dlg.open && titleEl.textContent === a.t) {
@@ -1048,7 +1078,7 @@ footer {{
         <input id="opml-import" type="file" accept=".opml,.xml,text/xml" hidden>
         <button id="share-link" type="button">Copy share link</button>
       </div>
-      <p class="settings-note">RSS and Atom both work. When a feed or article can&rsquo;t be fetched directly, your browser asks a public CORS relay (AllOrigins, with CodeTabs as fallback) &mdash; those services can see the URLs of your feeds and any articles you open. Editions are capped at 20 feeds. Import replaces the list above; click Save &amp; rebuild to apply. Removing every feed restores the default edition.</p>
+      <p class="settings-note">RSS and Atom both work. When a feed or article can&rsquo;t be fetched directly, your browser asks public relays (AllOrigins, then CodeTabs, then Jina Reader for article text) &mdash; those services can see the URLs of your feeds and any articles you open. Editions are capped at 20 feeds. Import replaces the list above; click Save &amp; rebuild to apply. Removing every feed restores the default edition.</p>
     </div>
     <div class="reader-foot">
       <button id="feed-reset" type="button">Reset to defaults</button>

@@ -40,6 +40,22 @@ the minimum length bar without any trouble at all, numbered two.</p>
 the three paragraph full-story confidence level, numbered three.</p>
 </main></body></html>"""
 
+ARTICLE_ALPHA_JINA = """Title: Fixture story alpha about mars
+
+URL Source: /article-alpha.html
+
+Markdown Content:
+
+The jina-rendered body paragraph of the fixture article is plain prose long
+enough to pass the forty character extraction threshold easily, jina one.
+
+A second jina paragraph continues the fixture story with enough text to clear
+the minimum length bar without any trouble at all, numbered jina two.
+
+A third jina paragraph rounds out the fixture article so extraction reaches the
+three paragraph full-story confidence level, numbered jina three.
+"""
+
 
 def _static_articles():
     items = []
@@ -65,6 +81,7 @@ def base_url(tmp_path_factory):
     (d / "index.html").write_text(build.render(sections, "12:00"), encoding="utf-8")
     (d / "sw.js").write_text(build.SW_JS.replace("__VERSION__", "test"), encoding="utf-8")
     (d / "article-alpha.html").write_text(ARTICLE_ALPHA, encoding="utf-8")
+    (d / "article-alpha.jina").write_text(ARTICLE_ALPHA_JINA, encoding="utf-8")
 
     httpd = http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0),

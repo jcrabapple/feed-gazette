@@ -128,6 +128,33 @@ class TestRelayFallback:
         page.wait_for_selector("#sections article", timeout=20000)
         assert "relaytest" in page.inner_text("#sections").lower()
 
+    def test_jina_is_used_for_article_text_when_all_relays_fail(self, page, base_url):
+        page.add_init_script("""
+          window.__realFetch = window.fetch;
+          window.fetch = function (url, opts) {
+            url = String(url);
+            // feeds load fine; article HTML fetches all fail (CORS + relay outage).
+            // jina URLs embed the article path, so check the relay hostname first.
+            if (url.indexOf('r.jina.ai') >= 0) {
+              return window.__realFetch('__BASE__/article-alpha.jina', opts);
+            }
+            if (url.indexOf('article-alpha.html') >= 0 || url.indexOf('allorigins') >= 0
+                || url.indexOf('codetabs') >= 0) {
+              return Promise.reject(new TypeError('Failed to fetch'));
+            }
+            return window.__realFetch(url, opts);
+          };
+        """.replace("__BASE__", base_url))
+        page.goto(base_url + "/" + hash_for(
+            [{"n": "JinaTest", "u": base_url + "/fixture-a.xml"}]))
+        page.wait_for_selector("#sections article", timeout=15000)
+        page.click(".art-link")
+        page.wait_for_function(
+            "document.getElementById('r-kicker').textContent === 'Full story'", timeout=15000)
+        body = page.inner_text("#r-body")
+        assert "jina one" in body.lower()
+        assert "numbered jina three" in body.lower()
+
 
 class TestReader:
     def test_plain_click_opens_popup(self, page, base_url):
