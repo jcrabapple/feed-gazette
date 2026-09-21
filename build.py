@@ -435,12 +435,45 @@ SCRIPT_FEEDS = r'''
     return out;
   }
 
-  /* article full text: HTML relays first (direct, allorigins, codetabs),
-     then the markdown extractor when every relay is down or thin */
+  /* article full text: direct first (free when the site allows CORS, instant
+     fail when it doesn't), then all backends race — first with paragraphs wins */
+  function backendJina(url) { return tryFetchText(RELAY3 + url).then(parseJinaMarkdown); }
+  function backendHtml(relay) {
+    return function (url) { return tryFetchText(relay + encodeURIComponent(url)).then(extractParas); };
+  }
+
+  /* full-text cache: 12h TTL in localStorage, keyed by URL hash */
+  var FT_TTL_MS = 12 * 3600 * 1000;
+  function ftCacheKey(url) {
+    var h = 0, s = String(url);
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return 'gazette-ft-' + (h >>> 0).toString(36);
+  }
+  function ftCacheGet(url) {
+    try {
+      var rec = JSON.parse(localStorage.getItem(ftCacheKey(url)) || 'null');
+      if (!rec || !rec.t || (Date.now() - rec.t) > FT_TTL_MS) return null;
+      return Array.isArray(rec.p) && rec.p.length ? rec.p : null;
+    } catch (e) { return null; }
+  }
+  function ftCacheSet(url, paras) {
+    try { localStorage.setItem(ftCacheKey(url), JSON.stringify({ t: Date.now(), p: paras })); }
+    catch (e) {} // quota: drop silently
+  }
+
   function fetchArticleParas(url) {
-    return fetchFeedText(url).then(extractParas, function () { return []; }).then(function (paras) {
-      if (paras.length) return paras;
-      return tryFetchText(RELAY3 + url).then(parseJinaMarkdown);
+    var cached = ftCacheGet(url);
+    if (cached) return Promise.resolve(cached);
+    return tryFetchText(url).then(extractParas, function () { return []; }).then(function (direct) {
+      if (direct.length) { ftCacheSet(url, direct); return direct; }
+      var racers = [backendJina, backendHtml(RELAY), backendHtml(RELAY2)].map(function (b) {
+        return b(url).then(function (paras) {
+          if (!paras || !paras.length) throw new Error('empty extraction');
+          return paras;
+        });
+      });
+      return Promise.any(racers).then(function (paras) { ftCacheSet(url, paras); return paras; })
+        .catch(function () { return []; });
     });
   }
 
@@ -536,6 +569,25 @@ SCRIPT_FEEDS = r'''
       container.innerHTML = html;
       if (window.__gazetteResetSearchCache) window.__gazetteResetSearchCache();
       if (window.__gazetteRunSearch) window.__gazetteRunSearch();
+
+      // warm the reader: prefetch the top stories' full text in idle time
+      var prefetchTasks = [];
+      results.forEach(function (r) {
+        if (r.items) r.items.slice(0, 2).forEach(function (a) {
+          if (a.u && !a.p.length) prefetchTasks.push(function () {
+            return fetchArticleParas(a.u).then(function (paras) {
+              if (paras.length) {
+                a.p = paras;
+                if (window.__gazetteResetSearchCache) window.__gazetteResetSearchCache();
+              }
+            });
+          });
+        });
+      });
+      if (prefetchTasks.length) {
+        var idle = window.requestIdleCallback || function (fn) { setTimeout(fn, 1200); };
+        idle(function () { pooled(prefetchTasks, 2); });
+      }
     });
   }
 
@@ -553,6 +605,7 @@ SCRIPT_FEEDS = r'''
     document.getElementById('r-date').textContent = a.d;
     document.getElementById('r-src').href = safeLink(a.u);
     titleEl.textContent = a.t;
+    kicker.textContent = a.p.length >= 3 ? 'Full story' : (a.p.length ? 'Partial story' : 'Summary');
     function draw(paras, note) {
       body.innerHTML = '';
       if (a.ai && a.ai.length) {
@@ -578,6 +631,14 @@ SCRIPT_FEEDS = r'''
     draw(a.p, a.p.length ? '' : 'Loading full story…');
     if (typeof dlg.showModal === 'function') { dlg.showModal(); window.scrollTo(0, savedY); }
     else dlg.setAttribute('open', '');
+    if (!a.p.length && a.u) {
+      var cachedFt = ftCacheGet(a.u);
+      if (cachedFt) {
+        a.p = cachedFt;
+        kicker.textContent = a.p.length >= 3 ? 'Full story' : 'Partial story';
+        draw(a.p, '');
+      }
+    }
     if (!a.p.length && !a.tried) {
       a.tried = true;
       if (!a.u) { draw(null, 'No article link in this feed item — summary only.'); return; }

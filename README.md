@@ -90,11 +90,14 @@ labels which you're getting ("Full story" vs "Summary") and always links to the
 source.
 
 Visitor-added feeds (via the Settings panel) are fetched in the browser, directly
-when the site sends CORS headers and otherwise through a public CORS relay —
-[allorigins](https://allorigins.win), with [CodeTabs](https://codetabs.com) as a
-fallback — with a 15-second timeout per attempt. **Be aware that those services
-can see the URLs of your custom feeds and of any articles you open.** Sites that
-block the relays show a visible error in their section.
+when the site sends CORS headers and otherwise through public relays —
+[allorigins](https://allorigins.win), [CodeTabs](https://codetabs.com), and
+[Jina Reader](https://r.jina.ai) for article text — with a 15-second timeout per
+attempt. Article fetches **race all backends in parallel** and the winner's text
+is cached in your browser for 12 hours; the top stories of each section are also
+prefetched in idle time, so taps usually open instantly. **Be aware that those
+services can see the URLs of your custom feeds and of any articles you open.**
+Sites that block the relays show a visible error in their section.
 
 ## Tests and CI
 

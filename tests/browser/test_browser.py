@@ -226,6 +226,57 @@ class TestScrollPosition:
         assert page.evaluate("window.scrollY") == before
 
 
+class TestFullTextSpeed:
+    STUB = """
+      window.__realFetch = window.fetch;
+      window.fetch = function (url, opts) {
+        url = String(url);
+        // article pages fail direct and via both HTML relays
+        if (url.indexOf('article-alpha.html') >= 0 || url.indexOf('allorigins') >= 0
+            || url.indexOf('codetabs') >= 0) {
+          if (url.indexOf('r.jina.ai') < 0) return Promise.reject(new TypeError('Failed to fetch'));
+        }
+        if (url.indexOf('r.jina.ai') >= 0) {
+          localStorage.setItem('__jinaCalls', String(parseInt(localStorage.getItem('__jinaCalls') || '0') + 1));
+          return window.__realFetch('__BASE__/article-alpha.jina', opts);
+        }
+        return window.__realFetch(url, opts);
+      };
+    """
+
+    def _load_edition(self, page, base_url):
+        page.add_init_script(self.STUB.replace("__BASE__", base_url))
+        page.goto(base_url + "/" + hash_for(
+            [{"n": "Fixtures", "u": base_url + "/fixture-a.xml"}]))
+        page.wait_for_selector("#sections article", timeout=15000)
+
+    def test_prefetch_warms_top_stories(self, page, base_url):
+        self._load_edition(page, base_url)
+        # lead article's text should arrive in the background without any tap
+        page.wait_for_function(
+            "window.__gazetteResolve('0') && window.__gazetteResolve('0').p.length > 0",
+            timeout=15000)
+        page.click(".art-link")
+        page.wait_for_selector("#reader[open]")
+        # kicker set synchronously at open: no loading state, straight to full story
+        assert "full story" in page.inner_text("#r-kicker").lower()
+
+    def test_cached_text_survives_reload_without_refetch(self, page, base_url):
+        self._load_edition(page, base_url)
+        page.click(".art-link")
+        page.wait_for_function(
+            "document.getElementById('r-kicker').textContent.toLowerCase() === 'full story'",
+            timeout=15000)
+        page.click("#reader-close")
+        calls_after_first = page.evaluate("localStorage.getItem('__jinaCalls') || '0'")
+        assert int(calls_after_first) >= 1
+        page.reload()
+        page.wait_for_selector("#sections article", timeout=15000)
+        page.click(".art-link")
+        assert "full story" in page.inner_text("#r-kicker").lower()
+        assert page.evaluate("localStorage.getItem('__jinaCalls')") == calls_after_first  # served from cache
+
+
 class TestOffline:
     def test_service_worker_caches_the_edition(self, page, base_url):
         page.goto(base_url + "/")
