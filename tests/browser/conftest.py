@@ -27,7 +27,18 @@ FIXTURE_FEED_A = """<?xml version="1.0"?>
 <link>__BASE__/article-alpha.html</link>
 <description>Beta summary text from the fixture feed</description>
 <pubDate>Fri, 18 Sep 2026 11:00:00 GMT</pubDate></item>
+__MORE_ITEMS__
 </channel></rss>"""
+
+
+def _more_feed_items(n=8):
+    out = []
+    for i in range(n):
+        out.append(f"""<item><title>Fixture extra story {i} about regional news</title>
+<link>__BASE__/article-extra-{i}.html</link>
+<description>Extra summary {i} from the fixture feed</description>
+<pubDate>Fri, 18 Sep 2026 1{i % 10}:00:00 GMT</pubDate></item>""")
+    return "\n".join(out)
 
 ARTICLE_ALPHA = """<html><body><main>
 <p>This video can not be played due to technical problems, sorry.</p>
@@ -59,17 +70,23 @@ three paragraph full-story confidence level, numbered jina three.
 
 def _static_articles():
     items = []
-    for idx, (title, link, desc, paras, also) in enumerate([
+    special = [
         ("Alpha story about mars rover", "https://example.org/a1",
          "Alpha summary", [LONG_PARA], ["Tech", "Science"]),
         ("Beta story about venus probe", "https://example.org/b1",
          "Beta summary", [LONG_PARA, LONG_PARA, LONG_PARA, LONG_PARA], []),
-        ("Gamma story about titan moon", "https://example.org/g1",
-         "Gamma summary", [], []),
-    ]):
+    ]
+    for title, link, desc, paras, also in special:
         items.append({"title": title, "link": link, "desc": desc,
                       "pub": "Fri, 18 Sep 2026 10:00:00 GMT", "thumb": None,
-                      "idx": idx, "paras": paras, "also_in": also})
+                      "idx": len(items), "paras": paras, "also_in": also})
+    # enough filler stories to make the page scrollable in tests
+    for i in range(2, 10):
+        items.append({"title": f"Fixture story number {i} about local affairs",
+                      "link": f"https://example.org/x{i}",
+                      "desc": f"Summary {i}", "pub": "Fri, 18 Sep 2026 10:00:00 GMT",
+                      "thumb": None, "idx": i, "paras": [LONG_PARA] * 3,
+                      "also_in": []})
     return items
 
 
@@ -88,8 +105,9 @@ def base_url(tmp_path_factory):
         functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(d)))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
-    (d / "fixture-a.xml").write_text(FIXTURE_FEED_A.replace("__BASE__", base),
-                                     encoding="utf-8")
+    (d / "fixture-a.xml").write_text(
+        FIXTURE_FEED_A.replace("__MORE_ITEMS__", _more_feed_items()).replace("__BASE__", base),
+        encoding="utf-8")
     yield base
     httpd.shutdown()
 

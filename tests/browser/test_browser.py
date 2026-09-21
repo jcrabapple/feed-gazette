@@ -54,7 +54,7 @@ class TestSearch:
         page.press("#search-box", "Escape")
         visible = page.eval_on_selector_all(
             "#sections article", "els => els.filter(e => e.style.display !== 'none').length")
-        assert visible == 3
+        assert visible == 10
         assert page.inner_text("#search-status") == ""
 
 
@@ -196,6 +196,34 @@ class TestReader:
         assert "video can not" not in body.lower()
         assert "image caption" not in body.lower()
         assert "numbered one" in body
+
+
+class TestScrollPosition:
+    def _scroll_and_capture(self, page):
+        target = page.evaluate(
+            "(() => { const y = Math.min(600, document.documentElement.scrollHeight - window.innerHeight);"
+            " window.scrollTo(0, y); return y; })()")
+        assert target > 100, "fixture page not tall enough to scroll"
+
+    def test_preserved_static_edition(self, page, base_url):
+        page.goto(base_url + "/")
+        self._scroll_and_capture(page)
+        page.click("#sections article:nth-of-type(8) .art-link")
+        page.wait_for_selector("#reader[open]")
+        before = page.evaluate("window.scrollY")  # click may scroll into view first
+        page.click("#reader-close")
+        assert page.evaluate("window.scrollY") == before
+
+    def test_preserved_custom_edition(self, page, base_url):
+        page.goto(base_url + "/" + hash_for(
+            [{"n": "Fixtures", "u": base_url + "/fixture-a.xml"}]))
+        page.wait_for_selector("#sections article", timeout=15000)
+        self._scroll_and_capture(page)
+        page.click("#sections article:nth-of-type(5) .art-link")
+        page.wait_for_selector("#reader[open]")
+        before = page.evaluate("window.scrollY")
+        page.click("#reader-close")
+        assert page.evaluate("window.scrollY") == before
 
 
 class TestOffline:

@@ -545,6 +545,7 @@ SCRIPT_FEEDS = r'''
     var a = liveData[idx];
     if (!a) return;
     var savedY = window.scrollY;
+    window.__gazetteScrollY = savedY;  // script 2's close() restores from this
     var dlg = document.getElementById('reader');
     var body = document.getElementById('r-body');
     var kicker = document.getElementById('r-kicker');
@@ -1185,8 +1186,6 @@ footer {{
     src: document.getElementById('r-src')
   }};
 
-  var lastScrollY = 0;
-
   function resolveArticle(idx) {{
     if (typeof window.__gazetteResolve === 'function') {{
       var live = window.__gazetteResolve(idx);
@@ -1195,11 +1194,16 @@ footer {{
     return DATA[idx];
   }}
 
+  // scroll position shared with the client-edition script, which has its own
+  // open() path — without this, closing a custom-edition reader jumps to top
+  function saveScroll() {{ window.__gazetteScrollY = window.scrollY; }}
+  function restoreScroll() {{ window.scrollTo(0, window.__gazetteScrollY || 0); }}
+
   function open(idx) {{
     var a = resolveArticle(idx);
     if (!a) return;
     if (a.live && typeof window.__gazetteOpen === 'function') {{ window.__gazetteOpen(idx); return; }}
-    lastScrollY = window.scrollY;
+    saveScroll();
     els.kicker.textContent = a.p.length >= 3 ? 'Full story' : (a.p.length ? 'Partial story' : 'Summary');
     els.title.textContent = a.t;
     els.date.textContent = a.d;
@@ -1220,7 +1224,7 @@ footer {{
     if (typeof dlg.showModal === 'function') {{
       dlg.showModal();
       // some mobile browsers scroll the page when the modal grabs focus
-      window.scrollTo(0, lastScrollY);
+      restoreScroll();
     }} else {{
       dlg.setAttribute('open', '');
     }}
@@ -1230,7 +1234,7 @@ footer {{
   function close() {{
     if (typeof dlg.close === 'function' && dlg.open) dlg.close();
     else dlg.removeAttribute('open');
-    window.scrollTo(0, lastScrollY);
+    restoreScroll();
   }}
 
   document.addEventListener('click', function (e) {{
