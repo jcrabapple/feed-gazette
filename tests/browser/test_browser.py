@@ -277,6 +277,36 @@ class TestFullTextSpeed:
         assert page.evaluate("localStorage.getItem('__jinaCalls')") == calls_after_first  # served from cache
 
 
+class TestLoadingIndicator:
+    def test_spinner_shows_while_fetching_then_clears(self, page, base_url):
+        page.add_init_script("""
+          window.__realFetch = window.fetch;
+          window.fetch = function (url, opts) {
+            url = String(url);
+            if (url.indexOf('r.jina.ai') >= 0) {
+              return new Promise(function (res) { setTimeout(res, 900); })
+                .then(function () { return window.__realFetch('__BASE__/article-alpha.jina', opts); });
+            }
+            if (url.indexOf('allorigins') >= 0 || url.indexOf('codetabs') >= 0
+                || url.indexOf('article-extra') >= 0) {
+              return Promise.reject(new TypeError('Failed to fetch'));
+            }
+            return window.__realFetch(url, opts);
+          };
+        """.replace("__BASE__", base_url))
+        page.goto(base_url + "/" + hash_for(
+            [{"n": "Fixtures", "u": base_url + "/fixture-a.xml"}]))
+        page.wait_for_selector("#sections article", timeout=15000)
+        # article 6 (an extra story) is outside the prefetch set, so it loads on tap
+        page.click("#sections article:nth-of-type(6) .art-link")
+        page.wait_for_selector("#r-body .loading-spinner", timeout=5000)
+        assert page.inner_text("#r-body .loading-note").startswith("Loading full story")
+        page.wait_for_function(
+            "document.getElementById('r-kicker').textContent.toLowerCase() === 'full story'",
+            timeout=15000)
+        assert not page.query_selector("#r-body .loading-spinner")
+
+
 class TestOffline:
     def test_service_worker_caches_the_edition(self, page, base_url):
         page.goto(base_url + "/")

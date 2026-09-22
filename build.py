@@ -621,10 +621,16 @@ SCRIPT_FEEDS = r'''
         body.appendChild(el);
       });
       if (note) {
-        var n = document.createElement('p');
-        n.className = 'loading-note';
-        n.textContent = note;
-        body.appendChild(n);
+        var p = document.createElement('p');
+        p.className = 'loading-note';
+        if (note === 'Loading full story…') {
+          var sp = document.createElement('span');
+          sp.className = 'loading-spinner';
+          sp.setAttribute('aria-hidden', 'true');
+          p.appendChild(sp);
+        }
+        p.appendChild(document.createTextNode(note));
+        body.appendChild(p);
       }
       body.scrollTop = 0;
     }
@@ -964,7 +970,14 @@ body {{
 .feed-add {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }}
 .feed-add input {{ flex: 1 1 10rem; background: var(--paper); border: 1px solid var(--rule); color: var(--ink); font: inherit; font-size: 0.85rem; padding: 0.4rem 0.6rem; }}
 .settings-note {{ margin-top: 1rem; font-size: 0.78rem; color: var(--faint); font-style: italic; }}
-.loading-note {{ color: var(--faint); font-style: italic; }}
+.loading-note {{ color: var(--faint); font-style: italic; display: flex; align-items: center; gap: 0.55rem; }}
+.loading-spinner {{
+  width: 0.95em; height: 0.95em; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--colrule); border-top-color: var(--ink);
+  animation: gazette-spin 0.75s linear infinite;
+}}
+@keyframes gazette-spin {{ to {{ transform: rotate(360deg); }} }}
+@media (prefers-reduced-motion: reduce) {{ .loading-spinner {{ animation: none; }} }}
 @media (max-width: 640px) {{
   .feed-name {{ min-width: 0; }}
 }}
