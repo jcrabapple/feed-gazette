@@ -307,6 +307,41 @@ class TestLoadingIndicator:
         assert not page.query_selector("#r-body .loading-spinner")
 
 
+class TestInstallable:
+    def test_chrome_reports_no_installability_errors(self, page, base_url):
+        page.goto(base_url + "/")
+        page.wait_for_function("navigator.serviceWorker.ready.then(() => true)", timeout=10000)
+        cdp = page.context.new_cdp_session(page)
+        manifest = cdp.send("Page.getAppManifest")
+        assert manifest["errors"] == []
+        errors = [e["errorId"] for e in cdp.send("Page.getInstallabilityErrors")["installabilityErrors"]]
+        # pytest-playwright contexts count as incognito; nothing else may fail.
+        assert [e for e in errors if e != "in-incognito"] == []
+
+    def test_theme_toggle_updates_browser_chrome_colour(self, page, base_url):
+        page.goto(base_url + "/")
+        colour = lambda: page.get_attribute('meta[name="theme-color"]', "content")
+        assert colour() == "#f6f1e5"
+        page.click("#theme-toggle")
+        assert colour() == "#191612"
+        page.reload()
+        assert colour() == "#191612"  # pre-paint script, before any toggle JS
+
+    def test_edition_opens_offline_after_first_visit(self, page, base_url):
+        page.goto(base_url + "/")
+        page.wait_for_function("navigator.serviceWorker.ready.then(() => true)", timeout=10000)
+        page.reload()
+        page.wait_for_function("!!navigator.serviceWorker.controller", timeout=10000)
+        page.context.set_offline(True)
+        try:
+            page.goto(base_url + "/")
+            assert page.locator("a.art-link").count() > 0
+            page.goto(base_url + "/manifest.webmanifest")
+            assert "The Feed Gazette" in page.content()
+        finally:
+            page.context.set_offline(False)
+
+
 class TestOffline:
     def test_service_worker_caches_the_edition(self, page, base_url):
         page.goto(base_url + "/")

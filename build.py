@@ -3,6 +3,7 @@
 import html
 import json
 import re
+import shutil
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -97,7 +98,8 @@ SW_JS = """/* Feed Gazette offline cache: stale-while-revalidate for the edition
    cache-first for fonts and images. The whole article corpus is embedded in
    the HTML, so the last edition you opened works fully offline. */
 const CACHE = 'gazette-__VERSION__';
-const CORE = ['./', './index.html'];
+const CORE = ['./', './index.html', './manifest.webmanifest',
+  './icons/icon-192.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
@@ -126,6 +128,36 @@ self.addEventListener('fetch', (e) => {
   }));
 });
 """
+
+ICONS_DIR = Path(__file__).parent / "icons"
+# Browser chrome colour per theme; keep in sync with --paper in the CSS.
+THEME_COLORS = {"paper": "#f6f1e5", "dark": "#191612", "eink": "#ffffff"}
+
+
+def build_manifest():
+    """Web app manifest. Every URL is relative so the same build installs
+    correctly at a domain root (here.now) and under a sub-path (GitHub Pages
+    at /<repo>/): relative URLs resolve against the manifest's own location."""
+    short = TITLE[4:] if TITLE.lower().startswith("the ") else TITLE
+    return {
+        "id": "./",
+        "name": TITLE,
+        "short_name": short[:12],
+        "description": TAGLINE,
+        "start_url": "./",
+        "scope": "./",
+        "display": "standalone",
+        "background_color": THEME_COLORS["paper"],
+        "theme_color": THEME_COLORS["paper"],
+        "categories": ["news"],
+        "icons": [
+            {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+            {"src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ],
+    }
+
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 MEDIA_NS = {"media": "http://search.yahoo.com/mrss/"}
@@ -861,10 +893,21 @@ def render(sections, generated):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The Feed Gazette</title>
+<meta name="description" content="{html.escape(TAGLINE)}">
+<meta name="theme-color" content="{THEME_COLORS['paper']}">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="{html.escape(build_manifest()['short_name'])}">
+<meta name="mobile-web-app-capable" content="yes">
 <script>
+window.__gazetteThemeColors = {json.dumps(THEME_COLORS)};
 try {{
   var t = localStorage.getItem('gazette-theme');
-  if (t === 'dark' || t === 'eink') document.documentElement.setAttribute('data-theme', t);
+  if (t === 'dark' || t === 'eink') {{
+    document.documentElement.setAttribute('data-theme', t);
+    document.querySelector('meta[name="theme-color"]').setAttribute('content', window.__gazetteThemeColors[t]);
+  }}
   var f = localStorage.getItem('gazette-font');
   if (f === 'serif' || f === 'sans' || f === 'plex') document.documentElement.setAttribute('data-font', f);
 }} catch (e) {{}}
@@ -1184,6 +1227,8 @@ footer {{
     if (next === 'paper') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', next);
     try {{ localStorage.setItem('gazette-theme', next); }} catch (e) {{}}
+    var tc = document.querySelector('meta[name="theme-color"]');
+    if (tc && window.__gazetteThemeColors) tc.setAttribute('content', window.__gazetteThemeColors[next]);
     updateToggleLabel();
   }});
   updateToggleLabel();
@@ -1403,6 +1448,14 @@ def collect_sections():
     removed = dedupe_sections(out)
     return out, removed
 
+def write_pwa_assets(out):
+    """Manifest and icons alongside index.html; together with sw.js this makes
+    the edition installable."""
+    (out / "manifest.webmanifest").write_text(
+        json.dumps(build_manifest(), indent=2), encoding="utf-8")
+    shutil.copytree(ICONS_DIR, out / "icons", dirs_exist_ok=True)
+
+
 def main():
     sections, removed = collect_sections()
     if removed:
@@ -1429,7 +1482,8 @@ def main():
     (OUT / "index.html").write_text(render(sections, generated), encoding="utf-8")
     sw_version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
     (OUT / "sw.js").write_text(SW_JS.replace("__VERSION__", sw_version), encoding="utf-8")
-    print(f"wrote {OUT / 'index.html'} + sw.js")
+    write_pwa_assets(OUT)
+    print(f"wrote {OUT / 'index.html'} + sw.js + manifest.webmanifest + icons/")
 
 if __name__ == "__main__":
     main()

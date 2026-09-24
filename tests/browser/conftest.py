@@ -97,6 +97,7 @@ def base_url(tmp_path_factory):
                  "items": _static_articles(), "error": None}]
     (d / "index.html").write_text(build.render(sections, "12:00"), encoding="utf-8")
     (d / "sw.js").write_text(build.SW_JS.replace("__VERSION__", "test"), encoding="utf-8")
+    build.write_pwa_assets(d)
     (d / "article-alpha.html").write_text(ARTICLE_ALPHA, encoding="utf-8")
     (d / "article-alpha.jina").write_text(ARTICLE_ALPHA_JINA, encoding="utf-8")
 

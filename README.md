@@ -48,6 +48,10 @@ one output HTML file you can host anywhere static files are served.
   "Use this edition" banner — nothing is saved until they accept.
 - **Offline reading** — a service worker caches the last edition you opened;
   the full article corpus is embedded in the page, so it works fully offline.
+- **Installable** — ships a web app manifest and icons, so it installs to a
+  phone home screen or desktop like an app (Chrome/Edge/Android prompt; on iOS,
+  Share → Add to Home Screen). The browser chrome follows the reading theme.
+  Replace the files in `icons/` to rebrand; the build copies them into `site/`.
 - **Guardrails for big editions** — feed lists are capped at 20 and URLs at 2048
   characters (build-time and in Settings); visitor editions fetch feeds through
   a small concurrency pool instead of all at once.

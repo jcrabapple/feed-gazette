@@ -1,5 +1,6 @@
 """Tests for the Feed Gazette build script. Run: python3 -m unittest discover -s tests"""
 import os
+import json
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -322,6 +323,53 @@ class TestCleanParas(unittest.TestCase):
         with mock.patch.object(build, "fetch", return_value=page.encode()):
             self.assertEqual(build.fetch_fulltext("https://x.org/1"),
                              ["Ministers announced the new policy on Tuesday morning."])
+
+
+class TestPwa(unittest.TestCase):
+    def test_manifest_is_installable(self):
+        m = build.build_manifest()
+        self.assertEqual(m["display"], "standalone")
+        self.assertEqual(m["name"], build.TITLE)
+        self.assertLessEqual(len(m["short_name"]), 12)
+        any_sizes = {i["sizes"] for i in m["icons"] if i["purpose"] == "any"}
+        self.assertTrue({"192x192", "512x512"} <= any_sizes)
+        self.assertTrue(any(i["purpose"] == "maskable" for i in m["icons"]))
+
+    def test_manifest_urls_are_relative(self):
+        # GitHub Pages serves the edition under /<repo>/; a leading slash
+        # would point start_url and every icon at the wrong path there.
+        m = build.build_manifest()
+        for url in [m["id"], m["start_url"], m["scope"]] + [i["src"] for i in m["icons"]]:
+            self.assertFalse(url.startswith("/"), url)
+
+    def test_every_manifest_icon_exists_in_repo(self):
+        for icon in build.build_manifest()["icons"]:
+            path = build.ICONS_DIR.parent / icon["src"]
+            self.assertTrue(path.is_file(), icon["src"])
+
+    def test_write_pwa_assets_copies_manifest_and_icons(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            build.write_pwa_assets(Path(d))
+            self.assertEqual(json.loads((Path(d) / "manifest.webmanifest").read_text())["name"], build.TITLE)
+            for icon in build.build_manifest()["icons"]:
+                self.assertTrue((Path(d) / icon["src"]).is_file(), icon["src"])
+
+    def test_sw_precache_list_matches_written_files(self):
+        import re as _re
+        core = _re.search(r"const CORE = \[(.*?)\];", build.SW_JS, _re.S).group(1)
+        for url in _re.findall(r"'\./([^']*)'", core):
+            if url in ("", "index.html"):
+                continue
+            self.assertTrue((build.ICONS_DIR.parent / url).is_file()
+                            or url == "manifest.webmanifest", url)
+
+    def test_page_links_manifest_and_theme_color(self):
+        page = build.render([], "12:00")
+        self.assertIn('rel="manifest" href="manifest.webmanifest"', page)
+        self.assertIn('name="theme-color"', page)
+        self.assertIn('rel="apple-touch-icon"', page)
 
 
 class TestCaps(unittest.TestCase):
